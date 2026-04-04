@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-init
+  namespace: mapreduce
+spec:
+  backoffLimit: 7
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: postgres-init
+          image: ktistos/postgres-init:latest
+          imagePullPolicy: Always
+          env:
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_DB
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE"; do
+                echo "Waiting for Postgres..."
+                sleep 2
+              done
+
+              psql -v ON_ERROR_STOP=1 \
+                -h "$PGHOST" \
+                -p "$PGPORT" \
+                -U "$PGUSER" \
+                -d "$PGDATABASE" \
+                -f /sql/init.sql
