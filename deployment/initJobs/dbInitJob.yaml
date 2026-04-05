@@ -8,6 +8,32 @@ spec:
   template:
     spec:
       restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-postgres
+          image: ktistos/postgres-init:latest
+          env:
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_DB
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE"; do
+                echo "Waiting for Postgres..."
+                sleep 2
+              done
       containers:
         - name: postgres-init
           image: ktistos/postgres-init:latest
@@ -36,11 +62,6 @@ spec:
             - sh
             - -c
             - |
-              until pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE"; do
-                echo "Waiting for Postgres..."
-                sleep 2
-              done
-
               psql -v ON_ERROR_STOP=1 \
                 -h "$PGHOST" \
                 -p "$PGPORT" \
