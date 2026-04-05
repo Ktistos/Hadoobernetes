@@ -1,4 +1,6 @@
 from keycloak import KeycloakOpenID
+import base64
+import json
 
 KEYCLOAK_URL = "http://kc.minikube.local"
 REALM = "hadoobernetes"
@@ -32,7 +34,6 @@ def main():
 
     # 3. Decode token and check claims
     print("\n3. Decoding token and checking claims...")
-    import base64, json
     payload = access_token.split(".")[1]
     payload += "=" * (4 - len(payload) % 4)
     claims = json.loads(base64.b64decode(payload))
