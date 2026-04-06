@@ -86,7 +86,7 @@ The following must be installed on your machine (or WSL on Windows):
   - Python 3.12+
   - git
 
-Windows users: see scripts/configure-hosts.bat at the repo root.
+Windows users: see init_scripts/configure-hosts.bat at the repo root.
 
 --------------------------------------------------------------------------------
   MINIKUBE SETUP  (run once per machine)
@@ -95,13 +95,13 @@ Windows users: see scripts/configure-hosts.bat at the repo root.
 From the repo root, run the init script to start Minikube and install all
 cluster-level dependencies (ingress, ingress-dns, metrics-server, MinIO operator):
 
-  bash scripts/minikube-init.sh
+  bash init_scripts/minikube-init.sh
 
 Then add the Minikube host entries to your /etc/hosts (Linux/WSL):
 
   echo "$(minikube ip) kc.minikube.local minio.minikube.local minio-console.minikube.local" | sudo tee -a /etc/hosts
 
-Windows users: run scripts/configure-hosts.bat as Administrator instead.
+Windows users: run init_scripts/configure-hosts.bat as Administrator instead.
 
 --------------------------------------------------------------------------------
   DEPLOYING THE STACK
