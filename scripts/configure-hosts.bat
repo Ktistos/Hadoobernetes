@@ -15,10 +15,21 @@ if %errorlevel% neq 0 (
 :: ------------------------------------------------------------------ ::
 :: Configuration                                                       ::
 :: ------------------------------------------------------------------ ::
-set MINIKUBE_IP=192.168.49.2
 set HOSTS_FILE=C:\Windows\System32\drivers\etc\hosts
-set HOSTS_ENTRY=%MINIKUBE_IP% kc.minikube.local minio.minikube.local minio-console.minikube.local
 set WSL_CONF=/etc/wsl.conf
+
+echo.
+echo =^> Fetching Minikube IP from WSL...
+for /f "delims=" %%i in ('wsl -e bash -c "minikube ip 2>/dev/null"') do set MINIKUBE_IP=%%i
+
+if "%MINIKUBE_IP%"=="" (
+    echo ERROR: Could not retrieve Minikube IP. Make sure Minikube is running in WSL.
+    pause
+    exit /b 1
+)
+echo    Minikube IP: %MINIKUBE_IP%
+
+set HOSTS_ENTRY=%MINIKUBE_IP% kc.minikube.local minio.minikube.local minio-console.minikube.local
 
 :: ------------------------------------------------------------------ ::
 :: Add host entries if not already present                             ::
