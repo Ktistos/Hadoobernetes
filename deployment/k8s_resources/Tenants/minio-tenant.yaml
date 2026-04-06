@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: minio-tenant
+---
+apiVersion: minio.min.io/v2
+kind: Tenant
+metadata:
+  name: minio
+  namespace: minio-tenant
+spec:
+  image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+  configuration:
+    name: minio-env-configuration
+  pools:
+    - name: pool-0
+      servers: 1
+      volumesPerServer: 4
+      volumeClaimTemplate:
+        metadata:
+          name: data
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi
+  requestAutoCert: false
+  exposeServices:
+    minio: true
+    console: true

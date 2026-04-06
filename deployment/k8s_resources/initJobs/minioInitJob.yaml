@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  namespace: minio-tenant
+spec:
+  backoffLimit: 7
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-minio
+          image: curlimages/curl:latest
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://minio/minio/health/live; do
+                echo "Waiting for MinIO..."
+                sleep 5
+              done
+      containers:
+        - name: minio-init
+          image: minio/mc:latest
+          imagePullPolicy: Always
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-env-configuration
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-env-configuration
+                  key: MINIO_ROOT_PASSWORD
+          command:
+            - sh
+            - -c
+            - |
+              mc alias set local http://minio "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+
+              mc mb --ignore-existing local/mapreduce
+
+              mc anonymous set none local/mapreduce
+
+              touch /tmp/.keep
+              mc cp /tmp/.keep local/mapreduce/users/.keep
+              mc cp /tmp/.keep local/mapreduce/system/jobs/.keep
