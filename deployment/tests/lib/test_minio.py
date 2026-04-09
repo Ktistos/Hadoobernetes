@@ -1,5 +1,4 @@
 import io
-import json
 
 from keycloak import KeycloakOpenID
 from minio import Minio
@@ -25,7 +24,7 @@ TEST_POLICY_NAME = "test-user-policy"
 
 def make_admin_client():
     return MinioAdmin(
-        MINIO_URL,
+        endpoint=MINIO_URL,
         credentials=StaticProvider(MINIO_ROOT_USER, MINIO_ROOT_PASSWORD),
         secure=False,
     )
@@ -96,18 +95,21 @@ def main():
         "Statement": [
             {
                 "Effect": "Allow",
+                "Action": ["s3:GetBucketLocation"],
+                "Resource": [f"arn:aws:s3:::{BUCKET}"],
+            },
+            {
+                "Effect": "Allow",
                 "Action": ["s3:*"],
-                "Resource": [
-                    f"arn:aws:s3:::{BUCKET}/{user_prefix}/*",
-                ],
-            }
+                "Resource": [f"arn:aws:s3:::{BUCKET}/{user_prefix}/*"],
+            },
         ],
     }
-    admin.add_policy(TEST_POLICY_NAME, json.dumps(policy))
+    admin.policy_add(TEST_POLICY_NAME, policy=policy)
     print(f"   Policy '{TEST_POLICY_NAME}' created ✓")
 
-    admin.add_user(TEST_USER_ACCESS_KEY, TEST_USER_SECRET_KEY)
-    admin.set_policy(TEST_POLICY_NAME, user=TEST_USER_ACCESS_KEY)
+    admin.user_add(TEST_USER_ACCESS_KEY, TEST_USER_SECRET_KEY)
+    admin.policy_set(TEST_POLICY_NAME, user=TEST_USER_ACCESS_KEY)
     print(f"   User '{TEST_USER_ACCESS_KEY}' created and policy attached ✓")
 
     # ------------------------------------------------------------------ #
@@ -167,9 +169,9 @@ def main():
     # 7. Cleanup                                                          #
     # ------------------------------------------------------------------ #
     print("\n7. Cleaning up...")
-    admin.remove_user(TEST_USER_ACCESS_KEY)
+    admin.user_remove(TEST_USER_ACCESS_KEY)
     print(f"   User '{TEST_USER_ACCESS_KEY}' removed ✓")
-    admin.remove_policy(TEST_POLICY_NAME)
+    admin.policy_remove(TEST_POLICY_NAME)
     print(f"   Policy '{TEST_POLICY_NAME}' removed ✓")
 
     print("\nAll checks passed.")
