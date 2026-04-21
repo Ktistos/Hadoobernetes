@@ -24,6 +24,8 @@ spec:
           image: ktistos/kcinit:latest
           imagePullPolicy: Always
           env:
+            - name: KEYCLOAK_URL
+              value: http://keycloak:8080
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
               valueFrom:
                 secretKeyRef:
