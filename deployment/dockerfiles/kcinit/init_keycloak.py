@@ -2,7 +2,7 @@ import os
 
 from keycloak import KeycloakAdmin
 
-KEYCLOAK_URL = "http://kc.minikube.local"
+KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://keycloak:8080")
 ADMIN_USERNAME = os.environ["KC_BOOTSTRAP_ADMIN_USERNAME"]
 ADMIN_PASSWORD = os.environ["KC_BOOTSTRAP_ADMIN_PASSWORD"]
 

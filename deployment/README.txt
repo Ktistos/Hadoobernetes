@@ -181,9 +181,10 @@ need to rebuild and push them if you change their contents.
   kcinit  (ktistos/kcinit:latest)
   --------
   Python 3.12 slim image. Installs python-keycloak and runs init_keycloak.py
-  on container start. The script connects to Keycloak with the bootstrap admin
-  credentials (injected via secrets) and creates the hadoobernetes realm,
-  the mapreduce-client, and the testuser account.
+  on container start. The script connects to Keycloak through KEYCLOAK_URL
+  (the init job sets this to the in-cluster http://keycloak:8080 service)
+  with the bootstrap admin credentials (injected via secrets) and creates the
+  hadoobernetes realm, the mapreduce-client, and the testuser account.
 
   Rebuild and push:
     cd deployment/dockerfiles/kcinit
