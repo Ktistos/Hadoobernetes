@@ -56,6 +56,7 @@ def load_user_map_function(code_path: str):
 def partition_key(key: str) -> int:
     return int(hashlib.md5(key.encode()).hexdigest(), 16) % NUM_REDUCERS
 
+# Main execution loop
 async def run():
     await ping("started")
     # Start the heartbeat running in the background
