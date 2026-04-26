@@ -115,6 +115,6 @@ async def run():
         await ping("failed")
         raise e
 
-# This tells Python to actually run the async code when the file is executed.
+# Run the async code when the file is executed.
 if __name__ == "__main__":
     asyncio.run(run())
