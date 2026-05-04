@@ -43,3 +43,6 @@ Thumbs.db
 *.pem
 *.key
 auth.json
+
+#other stuff
+test_file.txt

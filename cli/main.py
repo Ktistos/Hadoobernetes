@@ -13,7 +13,28 @@ import auth
 import storage
 import api_client
 
-@click.group()
+class HadoobCLI(click.Group):
+    """Custom Click Group to organize the help menu into sections."""
+    def format_commands(self, ctx, formatter):
+        # Fetch all registered commands
+        commands = {cmd_name: self.get_command(ctx, cmd_name) for cmd_name in self.list_commands(ctx)}
+        
+        # Define the categories and the exact order they should appear
+        groups = {
+            "Authentication": ["login", "logout"],
+            "Data & Storage": ["upload", "download"],
+            "Map-Reduce Operations": ["submit", "status", "abort"]
+        }
+
+        # Print each section nicely formatted
+        for group_name, cmd_names in groups.items():
+            with formatter.section(group_name):
+                formatter.write_dl(
+                    [(name, commands[name].get_short_help_str(60)) for name in cmd_names if name in commands]
+                )
+
+# Apply our custom class to the main CLI group
+@click.group(cls=HadoobCLI)
 def cli():
     """Hadoobernetes: The Python Kubernetes Map-Reduce CLI."""
     pass
@@ -28,6 +49,15 @@ def login(username, password):
         click.secho(f"Successfully logged in as {username}.", fg="green")
     except Exception as e:
         click.secho(str(e), fg="red")
+
+@cli.command()
+def logout():
+    """Log out and clear local credentials."""
+    if os.path.exists("auth.json"):
+        os.remove("auth.json")
+        click.echo("Successfully logged out.")
+    else:
+        click.echo("You are not currently logged in.")
 
 @cli.command()
 @click.option('--mappers', type=int, required=True, help='Number of map tasks to spawn.')
@@ -97,5 +127,42 @@ def abort(job_id):
         except Exception as e:
             click.secho(f"Error: {str(e)}", fg="red")
 
+@cli.command()
+@click.argument('local_path', type=click.Path(exists=True))
+@click.argument('remote_path')
+def upload(local_path, remote_path):
+    """Upload a local file to your MinIO bucket."""
+    from storage import upload_file
+    from auth import get_current_user_id
+    
+    try:
+        user_id = get_current_user_id()
+        # Prefix the remote path with the user's isolated directory
+        destination_prefix = f"users/{user_id}/{remote_path}"
+        url = upload_file(local_path, destination_prefix)
+        click.echo(f"Uploaded: {url}")
+    except Exception as e:
+        click.echo(f"Error: {e}")
+
+@cli.command()
+@click.argument('remote_path')
+@click.argument('local_path', type=click.Path())
+def download(remote_path, local_path):
+    """Download a file from your MinIO bucket to your local machine."""
+    from storage import get_client, BUCKET
+    from auth import get_current_user_id
+    
+    try:
+        user_id = get_current_user_id()
+        client = get_client()
+        
+        # Reconstruct the user's isolated directory path
+        full_remote_path = f"users/{user_id}/{remote_path}"
+        
+        client.fget_object(BUCKET, full_remote_path, local_path)
+        click.echo(f"Successfully downloaded {full_remote_path} to {local_path}")
+    except Exception as e:
+        click.echo(f"Download failed: {e}")
+        
 if __name__ == '__main__':
     cli()

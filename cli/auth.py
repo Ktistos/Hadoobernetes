@@ -10,6 +10,7 @@ import os
 import json
 import requests
 from pathlib import Path
+import base64
 
 KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "http://kc.minikube.local")
 REALM = os.getenv("KEYCLOAK_REALM", "hadoobernetes")
@@ -64,3 +65,30 @@ def get_access_token() -> str:
     with open(TOKEN_FILE, "r") as f:
         data = json.load(f)
         return data.get("access_token")
+
+def get_current_user_id() -> str:
+    """
+    Retrieves the user ID (subject) from the cached Keycloak access token.
+    
+    Returns:
+        str: The user's Keycloak subject ID.
+        
+    Raises:
+        Exception: If decoding fails or the subject is missing.
+    """
+    token = get_access_token()
+    try:
+        # The payload is the second segment of the JWT
+        payload_b64 = token.split(".")[1]
+        
+        # Add padding required by base64 decoding
+        payload_b64 += "=" * (4 - len(payload_b64) % 4)
+        claims = json.loads(base64.b64decode(payload_b64))
+        
+        user_id = claims.get("sub")
+        if not user_id:
+            raise Exception("Token payload is missing the 'sub' claim.")
+            
+        return user_id
+    except Exception as e:
+        raise Exception(f"Failed to parse user ID from token: {e}")
