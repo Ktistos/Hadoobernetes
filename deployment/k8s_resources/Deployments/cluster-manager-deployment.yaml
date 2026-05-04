@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-manager
+  namespace: mapreduce
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-manager
+  template:
+    metadata:
+      labels:
+        app: cluster-manager
+    spec:
+      serviceAccountName: default # Ensure this service account has RBAC permissions to spawn Jobs!
+      containers:
+        - name: cluster-manager
+          image: hadoobernetes/cluster-manager:latest
+          imagePullPolicy: Never # Forces Minikube to use the local image we build
+          ports:
+            - containerPort: 8000
+          env:
+            - name: KEYCLOAK_URL
+              value: "http://keycloak:8080" # Internal service name
+            - name: POSTGRES_HOST
+              value: "postgres" # Internal service name
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
