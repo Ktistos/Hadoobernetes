@@ -1,236 +1,372 @@
-import os, asyncio, importlib.util, tempfile, sqlite3
+"""
+worker/reducer.py
+==================
+Reducer worker pod.  Executed as a Kubernetes Job spawned by the Job Master.
+
+Environment variables injected by worker_spawner.py
+-----------------------------------------------------
+Required:
+  JOB_MASTER_URL    URL of the Job Master Service for this job
+  WORKER_ID         e.g. "reducer_0"
+  JOB_ID            UUID of the parent job
+  REDUCER_ID        Integer index of this reducer
+  NUM_MAPPERS       Total mapper count (kept for logging/validation)
+  CODE_PATH         MinIO object path of the user's .py  (jobs.code_location)
+  OUTPUT_PATH       MinIO object path for final output   (reduce_tasks.output_data_path)
+  MINIO_ENDPOINT    e.g. minio-service:9000
+  MINIO_ACCESS_KEY
+  MINIO_SECRET_KEY
+  MINIO_BUCKET
+
+Optional:
+  PING_INTERVAL     Heartbeat cadence in seconds (default 10)
+  PROFILE           Set to "1" to enable cProfile output (default off)
+
+Note: worker_spawner also sends INPUT_PATH, INTERMEDIATE_PREFIX, DATABASE_URL.
+  None of these are read by the reducer — they are harmless unused env vars.
+
+Design-doc references
+----------------------
+  §3.2  Worker Ping API
+  §5.4  Job Execution Workflow (reducer phase, fault-tolerance via pings)
+"""
+
+import asyncio
+import cProfile
+import importlib.util
+import io as stdlib_io
+import os
+import pstats
+import sqlite3
+import tempfile
+import time
+
+import httpx
+import orjson
 from minio import Minio
 
-# orjson is faster than stdlib json for both serialisation and deserialisation.
-# Returns bytes from dumps() — handled explicitly below.
-import orjson
+# ── Environment ──────────────────────────────────────────────────────────────
 
-# --- Config from environment ---
-# Injected by the Job Master and Kubernetes
 JOB_MASTER_URL   = os.environ["JOB_MASTER_URL"]
-WORKER_ID        = os.environ["WORKER_ID"]        # e.g. "reducer_0"
+WORKER_ID        = os.environ["WORKER_ID"]
 JOB_ID           = os.environ["JOB_ID"]
 REDUCER_ID       = int(os.environ["REDUCER_ID"])
-NUM_MAPPERS      = int(os.environ["NUM_MAPPERS"])  # kept for reference / logging
+NUM_MAPPERS      = int(os.environ["NUM_MAPPERS"])   # for logging / validation
 CODE_PATH        = os.environ["CODE_PATH"]
-OUTPUT_PATH      = os.environ["OUTPUT_PATH"]       # final output object path in MinIO
-
-# MinIO Connection details
+OUTPUT_PATH      = os.environ["OUTPUT_PATH"]
 MINIO_ENDPOINT   = os.environ["MINIO_ENDPOINT"]
 MINIO_ACCESS_KEY = os.environ["MINIO_ACCESS_KEY"]
 MINIO_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
 MINIO_BUCKET     = os.environ["MINIO_BUCKET"]
 PING_INTERVAL    = int(os.environ.get("PING_INTERVAL", "10"))
+PROFILE_ENABLED  = os.environ.get("PROFILE", "0") == "1"
 
-# Initialize MinIO client
+# SQLite batch size: number of rows inserted per executemany call.
+# 5000 is a good balance between memory use and insert overhead.
+SQLITE_BATCH_SIZE = 5000
+
+# ── Clients ───────────────────────────────────────────────────────────────────
+
 minio_client = Minio(MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, secure=False)
 
-
-# ── Persistent HTTP client (Optimisation 3.2) ────────────────────────────────
-# One client for the lifetime of this pod; reused by every ping call.
-import httpx
+# Persistent HTTP client (Opt 3.2)
 _http_client: httpx.AsyncClient | None = None
 
-async def get_http_client() -> httpx.AsyncClient:
+
+async def _get_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None or _http_client.is_closed:
         _http_client = httpx.AsyncClient()
     return _http_client
 
 
-# ── Heartbeat ────────────────────────────────────────────────────────────────
+# ── Heartbeat (design doc §3.2) ───────────────────────────────────────────────
 
-async def ping(status: str):
-    """Send a status update to the Job Master."""
-    client = await get_http_client()
+async def ping(status: str) -> None:
+    """Send a status update to the Job Master.  Never raises."""
+    client = await _get_http_client()
     try:
         await client.post(
             f"{JOB_MASTER_URL}/worker_ping",
             json={"worker_id": WORKER_ID, "worker_type": "reducer", "status": status},
             timeout=5,
         )
-    except Exception as e:
-        # If the ping fails (e.g., brief network hiccup), don't crash.
-        print(f"Ping failed: {e}")
+    except Exception as exc:
+        print(f"[reducer_{REDUCER_ID}] Ping '{status}' failed: {exc}")
 
-async def ping_loop():
-    """Runs continuously in the background, pinging every PING_INTERVAL seconds."""
+
+async def ping_loop() -> None:
+    """Background task — sends 'alive' every PING_INTERVAL seconds."""
     while True:
         await asyncio.sleep(PING_INTERVAL)
         await ping("alive")
 
 
-# ── User code loading ────────────────────────────────────────────────────────
+# ── User code loading ─────────────────────────────────────────────────────────
 
 def load_user_reduce_function(code_path: str):
-    """Download user code from MinIO and import the reduce() function."""
+    """Download user's .py from MinIO and return its reduce() function."""
     with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
         minio_client.fget_object(MINIO_BUCKET, code_path, f.name)
         spec   = importlib.util.spec_from_file_location("user_code", f.name)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return module.reduce  # User must define a function named 'reduce'
+        return module.reduce
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Profiling helpers ─────────────────────────────────────────────────────────
 
-async def run():
+class PhaseTimer:
+    """Same wall-clock phase timer as in mapper.py."""
+
+    def __init__(self):
+        self._phases: dict[str, float] = {}
+
+    class _Phase:
+        def __init__(self, timer: "PhaseTimer", name: str):
+            self._timer = timer
+            self._name  = name
+
+        def __enter__(self):
+            self._t0 = time.perf_counter()
+            return self
+
+        def __exit__(self, *_):
+            elapsed = time.perf_counter() - self._t0
+            self._timer._phases[self._name] = (
+                self._timer._phases.get(self._name, 0.0) + elapsed
+            )
+
+    def phase(self, name: str) -> "_Phase":
+        return self._Phase(self, name)
+
+    def report(self, prefix: str = "") -> None:
+        total = sum(self._phases.values())
+        lines = [f"[{prefix}] Phase timings (total {total:.3f}s):"]
+        for name, elapsed in self._phases.items():
+            pct = (elapsed / total * 100) if total > 0 else 0
+            lines.append(f"    {name:<25} {elapsed:7.3f}s  ({pct:5.1f}%)")
+        print("\n".join(lines))
+
+
+# ── SQLite helpers ────────────────────────────────────────────────────────────
+
+def _setup_sqlite(db_path: str) -> tuple[sqlite3.Connection, sqlite3.Cursor]:
+    """
+    Open a SQLite database optimised for bulk writes on ephemeral storage.
+    - synchronous=OFF   : don't fsync after every write (data is throwaway)
+    - journal_mode=MEMORY : keep the rollback journal in RAM, not on disk
+    - cache_size=-65536  : allow 64 MB page cache (speeds up ORDER BY scan)
+    """
+    conn   = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.executescript("""
+        PRAGMA synchronous   = OFF;
+        PRAGMA journal_mode  = MEMORY;
+        PRAGMA cache_size    = -65536;
+        CREATE TABLE map_data (key TEXT NOT NULL, value TEXT NOT NULL);
+    """)
+    conn.commit()
+    return conn, cursor
+
+
+def _ingest_partition(
+    cursor:   sqlite3.Cursor,
+    response,                   # urllib3 HTTPResponse from minio.get_object()
+    timer:    PhaseTimer,
+) -> int:
+    """
+    Stream one partition file from a MinIO HTTPResponse directly into SQLite.
+    Reads the network socket line-by-line (Opt 3.3), decodes with orjson,
+    and batch-inserts into map_data (Opt 2.2).
+    Returns the number of rows inserted.
+    """
+    batch      = []
+    rows_added = 0
+
+    for raw_line in response:
+        raw_line = raw_line.rstrip(b"\n")
+        if not raw_line:
+            continue
+
+        with timer.phase("deserialise"):
+            pair = orjson.loads(raw_line)
+
+        batch.append((pair[0], pair[1]))
+
+        if len(batch) >= SQLITE_BATCH_SIZE:
+            with timer.phase("sqlite_insert"):
+                cursor.executemany(
+                    "INSERT INTO map_data (key, value) VALUES (?, ?)", batch
+                )
+            rows_added += len(batch)
+            batch.clear()
+
+    if batch:
+        with timer.phase("sqlite_insert"):
+            cursor.executemany(
+                "INSERT INTO map_data (key, value) VALUES (?, ?)", batch
+            )
+        rows_added += len(batch)
+
+    return rows_added
+
+
+def _run_reduce_phase(
+    conn:        sqlite3.Connection,
+    user_reduce,
+    out_fh,                         # binary file handle for output JSONL
+    timer:       PhaseTimer,
+    profiler:    cProfile.Profile | None,
+) -> int:
+    """
+    Index the map_data table, iterate in sorted key order, call user_reduce()
+    per key group, and write output lines.  Returns total output pairs written.
+    """
+    with timer.phase("build_index"):
+        conn.cursor().execute("CREATE INDEX idx_key ON map_data (key)")
+        conn.commit()
+
+    sort_cursor = conn.cursor()
+    sort_cursor.execute("SELECT key, value FROM map_data ORDER BY key")
+
+    if profiler:
+        profiler.enable()
+
+    current_key    = None
+    current_values = []
+    result_count   = 0
+
+    for db_key, db_value in sort_cursor:
+        if db_key != current_key:
+            if current_key is not None:
+                with timer.phase("reduce_function"):
+                    pairs = list(user_reduce(current_key, current_values))
+                with timer.phase("write_output"):
+                    for out_key, out_value in pairs:
+                        out_fh.write(
+                            orjson.dumps([out_key, str(out_value)]) + b"\n"
+                        )
+                        result_count += 1
+            current_key    = db_key
+            current_values = [db_value]
+        else:
+            current_values.append(db_value)
+
+    # Flush the last key group
+    if current_key is not None:
+        with timer.phase("reduce_function"):
+            pairs = list(user_reduce(current_key, current_values))
+        with timer.phase("write_output"):
+            for out_key, out_value in pairs:
+                out_fh.write(
+                    orjson.dumps([out_key, str(out_value)]) + b"\n"
+                )
+                result_count += 1
+
+    if profiler:
+        profiler.disable()
+
+    return result_count
+
+
+# ── Main async entry point ────────────────────────────────────────────────────
+
+async def run() -> None:
     await ping("started")
     ping_task = asyncio.create_task(ping_loop())
 
-    db_path         = None   # path of the SQLite temp file
-    tmp_output_path = None   # path of the local output JSONL before upload
+    db_path         = None
+    tmp_output_path = None
+    timer           = PhaseTimer()
+    profiler        = cProfile.Profile() if PROFILE_ENABLED else None
 
     try:
-        user_reduce = load_user_reduce_function(CODE_PATH)
+        # Step 1 — load user reduce function
+        with timer.phase("load_user_code"):
+            user_reduce = load_user_reduce_function(CODE_PATH)
 
-        # ── Phase A: SQLite setup (Opt 2.2) ──────────────────────────────────
-        # We use a temp file (not ":memory:") so SQLite can spill to disk when
-        # the dataset is larger than RAM.  The PRAGMAs trade durability for
-        # speed — fine here because this data is throwaway intermediate state.
-        db_fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(db_fd)  # mkstemp opens the fd; sqlite3.connect opens its own
+        # Step 2 — set up SQLite database on local ephemeral disk
+        with timer.phase("sqlite_setup"):
+            db_fd, db_path = tempfile.mkstemp(suffix=".sqlite")
+            os.close(db_fd)
+            conn, cursor   = _setup_sqlite(db_path)
 
-        conn   = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-
-        cursor.executescript("""
-            PRAGMA synchronous  = OFF;
-            PRAGMA journal_mode = MEMORY;
-            CREATE TABLE map_data (key TEXT NOT NULL, value TEXT NOT NULL);
-        """)
-        conn.commit()
-
-        # ── Phase B: Shuffle — list_objects + stream to SQLite (Opt 2.1 + 3.3) ─
-        # Instead of looping blindly over every mapper_id, we ask MinIO which
-        # partition files actually exist in OUR reducer's prefix folder.
-        # This eliminates 404-swallowing and is correct even when a mapper
-        # produced zero pairs for this reducer (it simply won't create a file).
+        # Step 3 — Shuffle: list our reducer's prefix folder and stream all
+        # partition files directly from MinIO into SQLite (Opt 2.1 + 3.3).
+        # list_objects() returns only files that actually exist, so we never
+        # 404 on mappers that had no data for this reducer.
         prefix  = f"intermediate/{JOB_ID}/reducer_{REDUCER_ID}/"
-        objects = minio_client.list_objects(MINIO_BUCKET, prefix=prefix, recursive=True)
+        objects = list(minio_client.list_objects(MINIO_BUCKET, prefix=prefix, recursive=True))
+
+        print(
+            f"[reducer_{REDUCER_ID}] Found {len(objects)} partition files "
+            f"(expected up to {NUM_MAPPERS}) at {prefix}"
+        )
 
         total_rows = 0
         for obj in objects:
-            # Direct network-to-database streaming (Opt 3.3):
-            # get_object() returns an urllib3 HTTPResponse whose readline()
-            # reads from the network socket directly — no temp file on disk.
             response = None
             try:
-                response = minio_client.get_object(MINIO_BUCKET, obj.object_name)
-
-                batch = []
-                BATCH_SIZE = 5000  # insert in batches for speed
-
-                for raw_line in response:
-                    raw_line = raw_line.rstrip(b"\n")
-                    if not raw_line:
-                        continue
-
-                    # Each line is a JSON array [key, value] written by the mapper.
-                    pair = orjson.loads(raw_line)
-                    batch.append((pair[0], pair[1]))
-
-                    if len(batch) >= BATCH_SIZE:
-                        cursor.executemany(
-                            "INSERT INTO map_data (key, value) VALUES (?, ?)", batch
-                        )
-                        total_rows += len(batch)
-                        batch.clear()
-
-                # Insert any remaining rows in the last partial batch.
-                if batch:
-                    cursor.executemany(
-                        "INSERT INTO map_data (key, value) VALUES (?, ?)", batch
-                    )
-                    total_rows += len(batch)
-
+                with timer.phase("minio_get_object"):
+                    response = minio_client.get_object(MINIO_BUCKET, obj.object_name)
+                rows = _ingest_partition(cursor, response, timer)
+                total_rows += rows
             finally:
-                # Always release the network connection back to the pool —
-                # not doing this leaks the urllib3 socket.
+                # Always release the urllib3 socket back to the pool.
                 if response:
                     response.close()
                     response.release_conn()
 
-        conn.commit()
-        print(f"Shuffle complete: {total_rows} rows ingested from {prefix}")
+        with timer.phase("sqlite_commit"):
+            conn.commit()
 
-        # ── Phase C: Index + Sort (Opt 2.2 continued) ────────────────────────
-        # The index lets SQLite use a B-tree scan instead of a full sort pass,
-        # which is faster and uses O(log n) memory rather than O(n).
-        cursor.execute("CREATE INDEX idx_key ON map_data (key)")
-        conn.commit()
+        print(f"[reducer_{REDUCER_ID}] Shuffle complete: {total_rows} rows ingested.")
 
-        # ── Phase D: Streaming Reduce (Opt 2.3) ──────────────────────────────
-        # We write results line-by-line to a local JSONL temp file rather than
-        # accumulating a results list in RAM.  The cursor iterates one SQLite
-        # row at a time so the DB handles all memory management.
+        # Step 4 — Sort + Reduce + write output JSONL
         tmp_out_fd, tmp_output_path = tempfile.mkstemp(suffix=".jsonl")
         os.close(tmp_out_fd)
 
-        current_key    = None
-        current_values = []
-        result_count   = 0
-
-        # SELECT with ORDER BY key uses our index to deliver rows already sorted.
-        sort_cursor = conn.cursor()
-        sort_cursor.execute("SELECT key, value FROM map_data ORDER BY key")
-
         with open(tmp_output_path, "wb") as out_fh:
-            for db_key, db_value in sort_cursor:
-                if db_key != current_key:
-                    # Key changed — flush the accumulated values for the old key.
-                    if current_key is not None:
-                        for out_key, out_value in user_reduce(current_key, current_values):
-                            # orjson.dumps returns bytes — write directly to the
-                            # binary file handle (no encode() call needed).
-                            out_fh.write(
-                                orjson.dumps([out_key, str(out_value)]) + b"\n"
-                            )
-                            result_count += 1
-                    current_key    = db_key
-                    current_values = [db_value]
-                else:
-                    current_values.append(db_value)
-
-            # Flush the very last key group after the loop ends.
-            if current_key is not None:
-                for out_key, out_value in user_reduce(current_key, current_values):
-                    out_fh.write(
-                        orjson.dumps([out_key, str(out_value)]) + b"\n"
-                    )
-                    result_count += 1
+            result_count = _run_reduce_phase(conn, user_reduce, out_fh, timer, profiler)
 
         conn.close()
-        print(f"Reduce complete: {result_count} output pairs written.")
+        print(f"[reducer_{REDUCER_ID}] Reduce complete: {result_count} output pairs.")
 
-        # ── Phase E: Upload final output to MinIO ─────────────────────────────
-        # Stream the local output file directly to MinIO — no in-memory buffer.
-        output_size = os.path.getsize(tmp_output_path)
-        with open(tmp_output_path, "rb") as fh:
-            minio_client.put_object(
-                MINIO_BUCKET, OUTPUT_PATH,
-                fh, output_size,
-                content_type="application/jsonl",
-            )
+        # Step 5 — Upload final output to MinIO
+        with timer.phase("upload_output"):
+            output_size = os.path.getsize(tmp_output_path)
+            with open(tmp_output_path, "rb") as fh:
+                minio_client.put_object(
+                    MINIO_BUCKET, OUTPUT_PATH,
+                    fh, output_size,
+                    content_type="application/jsonl",
+                )
+
+        # ── Profiling output ──────────────────────────────────────────────────
+        prefix_log = f"reducer_{REDUCER_ID}"
+        timer.report(prefix=prefix_log)
+
+        if profiler:
+            stream = stdlib_io.StringIO()
+            ps     = pstats.Stats(profiler, stream=stream).sort_stats("cumulative")
+            ps.print_stats(20)
+            print(f"[{prefix_log}] cProfile top-20:\n{stream.getvalue()}")
 
         ping_task.cancel()
         await ping("completed")
-        print("Reducer completed successfully.")
+        print(f"[{prefix_log}] Reducer completed successfully.")
 
-    except Exception as e:
+    except Exception as exc:
         ping_task.cancel()
         await ping("failed")
-        raise e
+        raise exc
 
     finally:
-        # ── Cleanup ───────────────────────────────────────────────────────────
         if db_path and os.path.exists(db_path):
             os.unlink(db_path)
-
         if tmp_output_path and os.path.exists(tmp_output_path):
             os.unlink(tmp_output_path)
-
-        # Close the persistent HTTP client gracefully.
         if _http_client and not _http_client.is_closed:
             await _http_client.aclose()
 

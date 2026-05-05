@@ -1,0 +1,39 @@
+# reducer-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-reducer
+spec:
+  template:
+    spec:
+      containers:
+      - name: worker
+        image: mapreduce-worker:latest
+        imagePullPolicy: Never
+        command: ["python", "/app/worker/reducer.py"]
+        env:
+        - name: JOB_MASTER_URL
+          value: "http://dummy-url:8000"
+        - name: WORKER_ID
+          value: "reducer_0"
+        - name: JOB_ID
+          value: "test-job-profile-1" # MUST MATCH THE MAPPER'S JOB ID
+        - name: REDUCER_ID
+          value: "0"
+        - name: NUM_MAPPERS
+          value: "1"
+        - name: CODE_PATH
+          value: "code/wordcount.py"
+        - name: OUTPUT_PATH
+          value: "output/final_wordcount.jsonl"
+        - name: MINIO_ENDPOINT
+          value: "host.minikube.internal:9000"
+        - name: MINIO_ACCESS_KEY
+          value: "minioadmin"
+        - name: MINIO_SECRET_KEY
+          value: "minioadmin"
+        - name: MINIO_BUCKET
+          value: "mapreduce"
+        - name: PROFILE
+          value: "1" # TURN ON PROFILING!
+      restartPolicy: Never

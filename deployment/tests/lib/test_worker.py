@@ -69,7 +69,8 @@ os.environ.update(MAPPER_ENV)
 os.environ.update(REDUCER_ENV)
 
 # Add worker directory to sys.path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "worker"))
+#sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "worker"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "worker"))
 
 import mapper   # noqa: E402
 import reducer  # noqa: E402
