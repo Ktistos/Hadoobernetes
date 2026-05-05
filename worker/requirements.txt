@@ -1,0 +1,3 @@
+httpx
+minio
+orjson==3.10.3
