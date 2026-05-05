@@ -1,3 +1,49 @@
-.venv/
-__pycache__/
 *.pyc
+.vscode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+*/.venv/
+env/
+venv/
+mapreduce/
+
+# =========================
+# Project Specific (CLI)
+# =========================
+*.egg-info/
+cli/hadoob.egg-info/
+build/
+dist/
+*.egg
+
+# =========================
+# Testing
+# =========================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# =========================
+# OS & Editors
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# =========================
+# Secrets & Local Configs
+# =========================
+.env
+*.pem
+*.key
+auth.json
+
+#other stuff
+test_file.txt
