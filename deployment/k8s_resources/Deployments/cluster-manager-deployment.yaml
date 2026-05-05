@@ -16,8 +16,8 @@ spec:
       serviceAccountName: default # Ensure this service account has RBAC permissions to spawn Jobs!
       containers:
         - name: cluster-manager
-          image: hadoobernetes/cluster-manager:latest
-          imagePullPolicy: Never # Forces Minikube to use the local image we build
+          image: ktistos/cluster-manager:latest
+          imagePullPolicy: Always # Forces Minikube to use the local image we build
           ports:
             - containerPort: 8000
           env:
