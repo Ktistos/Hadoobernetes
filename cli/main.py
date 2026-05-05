@@ -53,8 +53,11 @@ def login(username, password):
 @cli.command()
 def logout():
     """Log out and clear local credentials."""
-    if os.path.exists("auth.json"):
-        os.remove("auth.json")
+    from auth import TOKEN_FILE
+    import os
+
+    if TOKEN_FILE.exists():
+        os.remove(TOKEN_FILE)
         click.echo("Successfully logged out.")
     else:
         click.echo("You are not currently logged in.")
@@ -149,17 +152,12 @@ def upload(local_path, remote_path):
 @click.argument('local_path', type=click.Path())
 def download(remote_path, local_path):
     """Download a file from your MinIO bucket to your local machine."""
-    from storage import get_client, BUCKET
     from auth import get_current_user_id
-    
+    from storage import download_file
     try:
         user_id = get_current_user_id()
-        client = get_client()
-        
-        # Reconstruct the user's isolated directory path
         full_remote_path = f"users/{user_id}/{remote_path}"
-        
-        client.fget_object(BUCKET, full_remote_path, local_path)
+        download_file(full_remote_path, local_path)
         click.echo(f"Successfully downloaded {full_remote_path} to {local_path}")
     except Exception as e:
         click.echo(f"Download failed: {e}")

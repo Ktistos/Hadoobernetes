@@ -37,3 +37,26 @@ def test_get_status_failure(monkeypatch):
         api_client.get_status("bad-uuid")
         
     assert "Failed to get status" in str(exc_info.value)
+
+def test_abort_job(monkeypatch):
+    """Test that the abort request is sent correctly."""
+    class MockResponse:
+        status_code = 200
+        text = "OK"
+        def json(self):
+            return {"message": "Job aborted successfully"}
+            
+    monkeypatch.setattr("requests.post", lambda *args, **kwargs: MockResponse())
+    result = api_client.abort_job("test-uuid")
+    assert result["message"] == "Job aborted successfully"
+
+def test_api_server_error(monkeypatch):
+    """Test handling of 500 errors from the server."""
+    class MockResponse:
+        status_code = 500
+        text = "Internal Server Error"
+        
+    monkeypatch.setattr("requests.post", lambda *args, **kwargs: MockResponse())
+    with pytest.raises(Exception) as exc:
+        api_client.submit_job({"num_mappers": 1})
+    assert "Failed to submit job" in str(exc.value)

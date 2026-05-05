@@ -7,6 +7,7 @@ of user input data and executable code prior to job submission.
 
 import os
 from minio import Minio
+from minio.error import S3Error
 
 MINIO_URL = os.getenv("MINIO_URL", "minio.minikube.local:80")
 MINIO_ROOT_USER = os.getenv("MINIO_ROOT_USER", "minioadmin")
@@ -58,3 +59,20 @@ def upload_file(local_path: str, destination_prefix: str) -> str:
     client.fput_object(BUCKET, object_name, local_path)
     
     return f"minio://{BUCKET}/{object_name}"
+
+def download_file(remote_path: str, local_path: str) -> None:
+    """
+    Downloads a file from the MinIO object storage cluster.
+    Args:
+        remote_path (str): The specific path inside the bucket.
+        local_path (str): The local destination path to save the file.
+    """
+    client = get_client()
+    try:
+        client.fget_object(BUCKET, remote_path, local_path)
+    except S3Error as e:
+        # Extract only the useful bits: e.g., "NoSuchKey: Object does not exist"
+        raise Exception(f"{e.code}: {e.message}")
+    except Exception as e:
+        # Fallback for networking or other unexpected errors
+        raise Exception(str(e))

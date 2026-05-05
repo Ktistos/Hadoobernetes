@@ -42,7 +42,15 @@ def login(username: str, password: str) -> None:
     response = requests.post(url, data=payload)
     
     if response.status_code != 200:
-        raise Exception(f"Login failed: {response.text}")
+        # Attempt to parse the JSON error message gracefully
+        try:
+            error_data = response.json()
+            error_msg = error_data.get("error_description", response.text)
+        except ValueError:
+            # Fallback if Keycloak returns a non-JSON 500 error
+            error_msg = response.text
+            
+        raise Exception(f"Login failed: {error_msg}")
         
     # Ensure directory exists and save token
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)

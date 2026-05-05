@@ -5,6 +5,7 @@ import pytest
 import json
 from pathlib import Path
 import auth
+import base64
 
 def test_login_success(monkeypatch, tmp_path):
     """Test that a successful login correctly writes the token to the local config file."""
@@ -39,3 +40,25 @@ def test_get_access_token_fails_when_not_logged_in(monkeypatch, tmp_path):
         auth.get_access_token()
         
     assert "You are not logged in" in str(exc_info.value)
+
+def test_get_current_user_id_success(monkeypatch):
+    """Test successfully parsing the subject from a JWT."""
+    header = base64.b64encode(b'{"alg":"HS256"}').decode()
+    payload = base64.b64encode(b'{"sub":"user-123"}').decode()
+    signature = "signature"
+    mock_token = f"{header}.{payload}.{signature}"
+    
+    monkeypatch.setattr(auth, "get_access_token", lambda: mock_token)
+    assert auth.get_current_user_id() == "user-123"
+
+def test_get_current_user_id_missing_sub(monkeypatch):
+    """Test parsing a token that lacks a subject claim."""
+    header = base64.b64encode(b'{"alg":"HS256"}').decode()
+    payload = base64.b64encode(b'{"other":"data"}').decode()
+    signature = "signature"
+    mock_token = f"{header}.{payload}.{signature}"
+    
+    monkeypatch.setattr(auth, "get_access_token", lambda: mock_token)
+    with pytest.raises(Exception) as exc:
+        auth.get_current_user_id()
+    assert "missing the 'sub' claim" in str(exc.value)

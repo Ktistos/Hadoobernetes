@@ -34,3 +34,36 @@ def test_upload_file_not_found():
     """Test that uploading a non-existent file raises a FileNotFoundError."""
     with pytest.raises(FileNotFoundError):
         storage.upload_file("/path/to/nowhere.txt", "users/staged")
+
+def test_bucket_creation_on_upload(monkeypatch, tmp_path):
+    """Test that a bucket is created if it does not exist during upload."""
+    test_file = tmp_path / "data.txt"
+    test_file.write_text("data")
+    
+    class MockMinioClient:
+        created_bucket = False
+        def bucket_exists(self, bucket_name):
+            return False
+        def make_bucket(self, bucket_name):
+            self.created_bucket = True
+        def fput_object(self, *args, **kwargs):
+            pass
+            
+    mock_client = MockMinioClient()
+    monkeypatch.setattr(storage, "get_client", lambda: mock_client)
+    
+    storage.upload_file(str(test_file), "users/staged")
+    assert mock_client.created_bucket is True
+
+def test_download_file(monkeypatch, tmp_path):
+    """Test downloading a file calls the MinIO SDK correctly."""
+    dest = tmp_path / "output.txt"
+    
+    class MockMinioClient:
+        def fget_object(self, bucket_name, object_name, file_path):
+            assert bucket_name == storage.BUCKET
+            assert object_name == "users/data.txt"
+            assert file_path == str(dest)
+            
+    monkeypatch.setattr(storage, "get_client", lambda: MockMinioClient())
+    storage.download_file("users/data.txt", str(dest))

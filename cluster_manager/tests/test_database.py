@@ -1,0 +1,59 @@
+import pytest
+import asyncio
+from uuid import uuid4
+import database as db
+from schemas import JobSubmissionRequest
+from unittest.mock import AsyncMock, MagicMock
+
+@pytest.fixture
+def mock_pool(monkeypatch):
+    pool = MagicMock()
+    conn = MagicMock()
+    
+    # 1. Mock the async context manager returned by pool.acquire()
+    acquire_ctx = AsyncMock()
+    acquire_ctx.__aenter__.return_value = conn
+    pool.acquire.return_value = acquire_ctx
+    
+    # 2. Mock the async context manager returned by conn.transaction()
+    tx_ctx = AsyncMock()
+    tx_ctx.__aenter__.return_value = AsyncMock()
+    conn.transaction.return_value = tx_ctx
+
+    # 3. Explicitly define awaited methods on the connection as AsyncMocks
+    conn.execute = AsyncMock()
+    conn.fetchrow = AsyncMock()
+    
+    monkeypatch.setattr(db, "_pool", pool)
+    return pool, conn
+
+def test_create_job_record(mock_pool):
+    _, conn = mock_pool
+    
+    req = JobSubmissionRequest(
+        num_mappers=2,
+        num_reducers=1,
+        input_data_path="in",
+        output_data_path="out",
+        code_location="code",
+        input_file_size_bytes=100
+    )
+    
+    # Run the async database function synchronously
+    job_id = asyncio.run(db.create_job_record("user-123", req))
+    
+    assert job_id is not None
+    assert conn.execute.call_count == 2
+    
+    # Check that the first query was for the jobs table
+    first_call_args = conn.execute.call_args_list[0][0]
+    assert "INSERT INTO mapreduce.jobs" in first_call_args[0]
+
+def test_get_job_status(mock_pool):
+    _, conn = mock_pool
+    mock_uuid = uuid4()
+    
+    conn.fetchrow.return_value = {"job_id": mock_uuid, "status": "running"}
+    
+    result = asyncio.run(db.get_job_status(mock_uuid))
+    assert result["status"] == "running"
