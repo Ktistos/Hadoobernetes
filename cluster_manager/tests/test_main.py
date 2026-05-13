@@ -1,6 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from uuid import uuid4
+import main
 from main import app
 from security import get_current_user
 import database as db
@@ -10,9 +11,48 @@ import k8s_client as k8s
 app.dependency_overrides[get_current_user] = lambda: "mock-user-id"
 client = TestClient(app)
 
-def test_readiness_liveliness():
-    assert client.get("/readiness_check").status_code == 200
-    assert client.get("/liveliness_check").status_code == 200
+def test_readiness_liveliness(monkeypatch):
+    async def mock_db_ready():
+        return True, "ok"
+
+    async def mock_k8s_ready():
+        return True, "ok"
+
+    monkeypatch.setattr(main, "_check_database_ready", mock_db_ready)
+    monkeypatch.setattr(main, "_check_kubernetes_ready", mock_k8s_ready)
+
+    readiness = client.get("/readiness_check")
+    liveliness = client.get("/liveliness_check")
+
+    assert readiness.status_code == 200
+    assert readiness.json() == {
+        "status": "ready",
+        "checks": {"database": "ok", "kubernetes": "ok"},
+    }
+    assert liveliness.status_code == 200
+    assert liveliness.json() == {"status": "alive"}
+
+
+def test_readiness_fails_when_dependency_unavailable(monkeypatch):
+    async def mock_db_ready():
+        return False, "database check failed: timeout"
+
+    async def mock_k8s_ready():
+        return True, "ok"
+
+    monkeypatch.setattr(main, "_check_database_ready", mock_db_ready)
+    monkeypatch.setattr(main, "_check_kubernetes_ready", mock_k8s_ready)
+
+    response = client.get("/readiness_check")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "not ready",
+        "checks": {
+            "database": "database check failed: timeout",
+            "kubernetes": "ok",
+        },
+    }
 
 def test_submit_job(monkeypatch):
     """Test successful job submission triggers DB and K8s."""

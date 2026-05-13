@@ -20,6 +20,22 @@ spec:
           imagePullPolicy: Never # Forces Minikube to use the local image we build
           ports:
             - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /readiness_check
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /liveliness_check
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           env:
             - name: KEYCLOAK_URL
               value: "http://keycloak:8080" # Internal service name

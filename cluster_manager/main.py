@@ -5,8 +5,11 @@ This script wires together the data schemas, database interactions, Kubernetes o
 and security protocols into a set of exposed HTTP endpoints.
 """
 
-from fastapi import FastAPI, Depends, HTTPException
 from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from uuid import UUID
 
 from schemas import JobSubmissionRequest, JobSubmissionResponse, JobStatusResponse, UpdateJobStateRequest
@@ -28,13 +31,48 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Hadoobernetes Cluster Manager", lifespan=lifespan)
 
+
+async def _check_database_ready() -> tuple[bool, str]:
+    if db._pool is None:
+        return False, "database pool not initialized"
+
+    try:
+        async with db._pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return True, "ok"
+    except Exception as exc:
+        return False, f"database check failed: {exc}"
+
+
+async def _check_kubernetes_ready() -> tuple[bool, str]:
+    try:
+        await run_in_threadpool(lambda: k8s.client.VersionApi().get_code())
+        return True, "ok"
+    except Exception as exc:
+        return False, f"kubernetes API check failed: {exc}"
+
+
 @app.get("/readiness_check")
 async def readiness_check():
     """
     Probes whether the service is ready to accept HTTP traffic.
     Used by Kubernetes readiness probes.
     """
-    return {"status": "ready"}
+    checks = {}
+
+    db_ok, db_message = await _check_database_ready()
+    checks["database"] = db_message
+
+    k8s_ok, k8s_message = await _check_kubernetes_ready()
+    checks["kubernetes"] = k8s_message
+
+    if db_ok and k8s_ok:
+        return {"status": "ready", "checks": checks}
+
+    return JSONResponse(
+        status_code=503,
+        content={"status": "not ready", "checks": checks},
+    )
 
 @app.get("/liveliness_check")
 async def liveliness_check():
