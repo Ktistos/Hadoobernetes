@@ -1,0 +1,13 @@
+# set -e
+
+# SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# VENV_PYTHON="$SCRIPT_DIR/../../.venv/bin/python3"
+
+# $VENV_PYTHON "$SCRIPT_DIR/lib/test_worker.py"
+
+#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+python3 "$SCRIPT_DIR/lib/test_worker.py"

@@ -1,0 +1,43 @@
+# mapper-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-mapper
+spec:
+  template:
+    spec:
+      containers:
+      - name: worker
+        image: mapreduce-worker:latest
+        imagePullPolicy: Never # Use the image we just loaded
+        command: ["python", "/app/worker/mapper.py"]
+        env:
+        - name: JOB_MASTER_URL
+          value: "http://dummy-url:8000"
+        - name: WORKER_ID
+          value: "mapper_0"
+        - name: JOB_ID
+          value: "test-job-profile-1"
+        - name: MAP_ID
+          value: "0"
+        - name: OFFSET_START
+          value: "0"
+        - name: OFFSET_END
+          value: "10601101" # <--- UPDATE THIS WITH YOUR ACTUAL FILE SIZE
+        - name: NUM_REDUCERS
+          value: "1"        # Just 1 reducer for this test
+        - name: INPUT_PATH
+          value: "input/dataset.txt"
+        - name: CODE_PATH
+          value: "code/wordcount.py"
+        - name: MINIO_ENDPOINT
+          value: "host.minikube.internal:9000" # Minikube's bridge to localhost
+        - name: MINIO_ACCESS_KEY
+          value: "minioadmin"
+        - name: MINIO_SECRET_KEY
+          value: "minioadmin"
+        - name: MINIO_BUCKET
+          value: "mapreduce"
+        - name: PROFILE
+          value: "1" # TURN ON PROFILING!
+      restartPolicy: Never

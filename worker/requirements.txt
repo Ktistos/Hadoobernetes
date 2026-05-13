@@ -1,3 +1,12 @@
-httpx
-minio
+# Worker pod dependencies
+# Pinned for reproducibility — bump versions deliberately, not automatically.
+
+# Async HTTP client — persistent connection pooling for heartbeat pings
+httpx==0.27.0
+
+# MinIO Python SDK — object storage client
+minio==7.2.7
+
+# High-performance JSON — C extension, ~3-10x faster than stdlib json
+# Returns bytes from dumps(); accepts bytes/str/memoryview in loads()
 orjson==3.10.3
