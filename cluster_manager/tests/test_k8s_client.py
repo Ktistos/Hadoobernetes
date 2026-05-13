@@ -14,8 +14,14 @@ def test_spawn_job_master(monkeypatch):
     # Verify the body passed to the K8s API has the correct name
     call_kwargs = mock_batch.create_namespaced_job.call_args[1]
     job_body = call_kwargs['body']
+    container = job_body.spec.template.spec.containers[0]
     assert str(test_id)[:8] in job_body.metadata.name
     assert job_body.spec.template.metadata.labels["job_id"] == str(test_id)
+    assert container.ports[0].container_port == 8000
+    assert container.readiness_probe.http_get.path == "/readyz"
+    assert container.readiness_probe.http_get.port == 8000
+    assert container.liveness_probe.http_get.path == "/healthz"
+    assert container.liveness_probe.http_get.port == 8000
 
 def test_terminate_job_pods(monkeypatch):
     mock_batch = MagicMock()

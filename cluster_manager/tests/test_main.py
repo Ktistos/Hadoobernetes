@@ -21,8 +21,8 @@ def test_readiness_liveliness(monkeypatch):
     monkeypatch.setattr(main, "_check_database_ready", mock_db_ready)
     monkeypatch.setattr(main, "_check_kubernetes_ready", mock_k8s_ready)
 
-    readiness = client.get("/readiness_check")
-    liveliness = client.get("/liveliness_check")
+    readiness = client.get("/readyz")
+    liveliness = client.get("/healthz")
 
     assert readiness.status_code == 200
     assert readiness.json() == {
@@ -43,7 +43,7 @@ def test_readiness_fails_when_dependency_unavailable(monkeypatch):
     monkeypatch.setattr(main, "_check_database_ready", mock_db_ready)
     monkeypatch.setattr(main, "_check_kubernetes_ready", mock_k8s_ready)
 
-    response = client.get("/readiness_check")
+    response = client.get("/readyz")
 
     assert response.status_code == 503
     assert response.json() == {

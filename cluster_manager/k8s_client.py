@@ -39,6 +39,23 @@ def spawn_job_master(job_id: UUID):
         name="job-master",
         image="hadoobernetes/job-master:latest",
         image_pull_policy="Always",
+        ports=[
+            client.V1ContainerPort(container_port=8000),
+        ],
+        readiness_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path="/readyz", port=8000),
+            initial_delay_seconds=3,
+            period_seconds=5,
+            timeout_seconds=3,
+            failure_threshold=3,
+        ),
+        liveness_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path="/healthz", port=8000),
+            initial_delay_seconds=20,
+            period_seconds=10,
+            timeout_seconds=3,
+            failure_threshold=3,
+        ),
         env=[
             client.V1EnvVar(name="JOB_ID", value=str(job_id)),
             client.V1EnvVar(name="DB_HOST", value=os.getenv("POSTGRES_HOST", "postgres")),

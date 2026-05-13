@@ -22,7 +22,7 @@ spec:
             - containerPort: 8000
           readinessProbe:
             httpGet:
-              path: /readiness_check
+              path: /readyz
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -30,7 +30,7 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /liveliness_check
+              path: /healthz
               port: 8000
             initialDelaySeconds: 20
             periodSeconds: 10

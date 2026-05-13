@@ -6,11 +6,11 @@ and security protocols into a set of exposed HTTP endpoints.
 """
 
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
-from uuid import UUID
 
 from schemas import JobSubmissionRequest, JobSubmissionResponse, JobStatusResponse, UpdateJobStateRequest
 from security import get_current_user
@@ -52,7 +52,7 @@ async def _check_kubernetes_ready() -> tuple[bool, str]:
         return False, f"kubernetes API check failed: {exc}"
 
 
-@app.get("/readiness_check")
+@app.get("/readyz")
 async def readiness_check():
     """
     Probes whether the service is ready to accept HTTP traffic.
@@ -74,7 +74,7 @@ async def readiness_check():
         content={"status": "not ready", "checks": checks},
     )
 
-@app.get("/liveliness_check")
+@app.get("/healthz")
 async def liveliness_check():
     """
     Probes whether the service application process is alive and functioning.
