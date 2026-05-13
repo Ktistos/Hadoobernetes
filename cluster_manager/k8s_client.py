@@ -38,7 +38,7 @@ def spawn_job_master(job_id: UUID):
     container = client.V1Container(
         name="job-master",
         image="hadoobernetes/job-master:latest",
-        image_pull_policy="IfNotPresent",
+        image_pull_policy="Always",
         env=[
             client.V1EnvVar(name="JOB_ID", value=str(job_id)),
             client.V1EnvVar(name="DB_HOST", value=os.getenv("POSTGRES_HOST", "postgres")),
@@ -52,7 +52,7 @@ def spawn_job_master(job_id: UUID):
 
     job_spec = client.V1JobSpec(
         template=template,
-        backoff_limit=0
+        backoff_limit=5
     )
 
     job = client.V1Job(
