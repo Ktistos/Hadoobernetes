@@ -31,7 +31,6 @@ os.environ.setdefault("JOB_ID",                  "aaaaaaaa-bbbb-cccc-dddd-eeeeee
 os.environ.setdefault("DATABASE_URL",             "postgresql://test:test@localhost/test")
 os.environ.setdefault("CLUSTER_MANAGER_URL",      "http://cluster-manager:8000")
 os.environ.setdefault("JOB_MASTER_SERVICE_URL",   "http://job-master-svc-aaaaaaaa:8000")
-os.environ.setdefault("WORKER_IMAGE",             "test-registry/mr-worker:test")
 os.environ.setdefault("MINIO_ENDPOINT",           "minio:9000")
 os.environ.setdefault("MINIO_ACCESS_KEY",         "minioadmin")
 os.environ.setdefault("MINIO_SECRET_KEY",         "minioadmin")
@@ -850,6 +849,22 @@ class TestWorkerSpawner:
         assert "7" in submitted_job.metadata.name
         assert "2" in submitted_job.metadata.name
 
+    def test_spawn_mapper_uses_fixed_worker_image_and_absolute_command(self):
+        mock_api = MagicMock()
+        mock_api.create_namespaced_job = MagicMock()
+
+        with patch("worker_spawner._get_batch_v1", return_value=mock_api):
+            spawn_mapper(
+                job_id=JOB_ID, map_id=0, attempt=1,
+                config=SAMPLE_CONFIG, job=SAMPLE_JOB,
+                offset_start=0, offset_end=500,
+            )
+
+        submitted_job = mock_api.create_namespaced_job.call_args[1]["body"]
+        container = submitted_job.spec.template.spec.containers[0]
+        assert container.image == "mapreduce-worker:latest"
+        assert container.command == ["python", "/app/worker/mapper.py"]
+
     def test_spawn_reducer_calls_create_k8s_job(self):
         mock_api = MagicMock()
         mock_api.create_namespaced_job = MagicMock()
@@ -865,6 +880,22 @@ class TestWorkerSpawner:
             )
 
         mock_api.create_namespaced_job.assert_called_once()
+
+    def test_spawn_reducer_uses_fixed_worker_image_and_absolute_command(self):
+        mock_api = MagicMock()
+        mock_api.create_namespaced_job = MagicMock()
+
+        with patch("worker_spawner._get_batch_v1", return_value=mock_api):
+            spawn_reducer(
+                job_id=JOB_ID, reduce_id=1, attempt=1,
+                config=SAMPLE_CONFIG, job=SAMPLE_JOB,
+                output_path=f"intermediate/{JOB_ID}/output/part_1.json",
+            )
+
+        submitted_job = mock_api.create_namespaced_job.call_args[1]["body"]
+        container = submitted_job.spec.template.spec.containers[0]
+        assert container.image == "mapreduce-worker:latest"
+        assert container.command == ["python", "/app/worker/reducer.py"]
 
     def test_spawn_mapper_backoff_limit_is_zero(self):
         """backoff_limit must be 0 — Kubernetes must never auto-retry."""

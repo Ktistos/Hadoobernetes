@@ -11,7 +11,6 @@ Environment variables (all required unless noted):
   DATABASE_URL            asyncpg DSN  e.g. postgresql://user:pass@host:5432/db
   CLUSTER_MANAGER_URL     e.g. http://cluster-manager-service:8000
   JOB_MASTER_SERVICE_URL  URL workers use to reach *this* pod
-  WORKER_IMAGE            Docker image for mapper/reducer pods
   MINIO_ENDPOINT          e.g. minio-service:9000
   MINIO_ACCESS_KEY
   MINIO_SECRET_KEY

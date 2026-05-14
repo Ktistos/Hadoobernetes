@@ -17,7 +17,6 @@ The Job Master pod must run under a ServiceAccount that has:
 See k8s/job-master-rbac.yaml.
 
 Environment variables consumed here (all set on the Job Master pod):
-  WORKER_IMAGE            Docker image for mapper/reducer pods
   K8S_NAMESPACE           (optional, default "default")
   JOB_MASTER_SERVICE_URL  URL workers use to call /worker_ping
   MINIO_ENDPOINT
@@ -36,6 +35,7 @@ from kubernetes import client as k8s_client, config as k8s_config
 logger = logging.getLogger(__name__)
 
 _NAMESPACE = os.environ.get("K8S_NAMESPACE", "default")
+_WORKER_IMAGE = "mapreduce-worker:latest"
 
 # ---------------------------------------------------------------------------
 # Kubernetes client — lazy initialisation
@@ -111,8 +111,6 @@ def _create_k8s_job(
     backoff_limit=0: Kubernetes must NOT retry workers — the Job Master does that.
     restart_policy=Never: keeps the failed pod around for log inspection.
     """
-    worker_image = os.environ["WORKER_IMAGE"]
-
     job_body = k8s_client.V1Job(
         api_version = "batch/v1",
         kind        = "Job",
@@ -131,7 +129,7 @@ def _create_k8s_job(
                     containers     = [
                         k8s_client.V1Container(
                             name    = "worker",
-                            image   = worker_image,
+                            image   = _WORKER_IMAGE,
                             command = command,
                             env     = env_vars,
                             # Resource requests — tune for your cluster
@@ -198,7 +196,7 @@ def spawn_mapper(
     ]
 
     env_vars = _base_env(job_id, job, config) + extra_env
-    _create_k8s_job(job_name, ["python", "mapper.py"], env_vars, labels)
+    _create_k8s_job(job_name, ["python", "/app/worker/mapper.py"], env_vars, labels)
 
 
 def spawn_reducer(
@@ -234,7 +232,7 @@ def spawn_reducer(
     ]
 
     env_vars = _base_env(job_id, job, config) + extra_env
-    _create_k8s_job(job_name, ["python", "reducer.py"], env_vars, labels)
+    _create_k8s_job(job_name, ["python", "/app/worker/reducer.py"], env_vars, labels)
 
 
 def delete_worker_job(role: str, job_id: str, task_id: int, attempt: int) -> None:
