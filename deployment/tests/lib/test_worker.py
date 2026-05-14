@@ -97,6 +97,13 @@ def _make_input_file(lines: list[str]) -> str:
     return path
 
 
+def _make_input_bytes(lines: list[str], trailing_newline: bool = True) -> bytes:
+    text = "\n".join(lines)
+    if trailing_newline:
+        text += "\n"
+    return text.encode("utf-8")
+
+
 def _make_jsonl_content(pairs: list[tuple]) -> bytes:
     """Encode a list of (key, value) pairs as JSONL bytes."""
     return b"".join(orjson.dumps([k, str(v)]) + b"\n" for k, v in pairs)
@@ -111,6 +118,20 @@ def _wordcount_map(key: str, value: str):
 
 def _wordcount_reduce(key: str, values: list):
     yield key, str(len(values))
+
+
+def _line_echo_map(key: str, value: str):
+    yield "record", value
+
+
+def _offset_echo_map(key: str, value: str):
+    yield "record", f"{key}:{value}"
+
+
+class _FakeMinioResponse(io.BytesIO):
+
+    def release_conn(self):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -141,114 +162,247 @@ class TestPartitionKey:
 # ---------------------------------------------------------------------------
 
 class TestRunSyncCore:
+    def _collect_pairs(self, uploads: dict[str, bytes]) -> list[tuple[str, str]]:
+        pairs = []
+        for _, content in sorted(uploads.items()):
+            for line in content.splitlines():
+                if line:
+                    key, value = orjson.loads(line)
+                    pairs.append((key, value))
+        return pairs
 
-    def _make_handles(self):
-        """Create in-memory StringIO handles for each reducer partition."""
-        handles = {i: io.StringIO() for i in range(NUM_REDUCERS)}
-        paths   = {i: f"/tmp/fake_partition_{i}.jsonl" for i in range(NUM_REDUCERS)}
-        return handles, paths
+    def _make_streaming_minio(self, input_data: bytes, calls: list[tuple], uploads: dict[str, bytes]):
+        def fake_get_object(bucket, obj_path, offset=0, length=0):
+            calls.append((bucket, obj_path, offset, length))
+            end_offset = None if not length else offset + length
+            return _FakeMinioResponse(input_data[offset:end_offset])
+
+        def fake_put_object(bucket, path, data, size, content_type=None):
+            uploads[path] = data.read()
+
+        mock_minio = MagicMock()
+        mock_minio.get_object.side_effect = fake_get_object
+        mock_minio.put_object.side_effect = fake_put_object
+        return mock_minio
+
+    def _run_with_offsets(
+        self,
+        input_data: bytes,
+        start: int,
+        end: int,
+        user_map=_wordcount_map,
+        block_size: int = 8,
+    ):
+        calls = []
+        uploads = {}
+        mock_minio = self._make_streaming_minio(input_data, calls, uploads)
+
+        with patch.object(mapper, "minio_client", mock_minio), \
+             patch.object(mapper, "OFFSET_START", start), \
+             patch.object(mapper, "OFFSET_END", end), \
+             patch.object(mapper, "READ_BLOCK_SIZE", block_size):
+            pairs_emitted = mapper._run_sync_core(user_map, object_path="input/data.txt")
+
+        return pairs_emitted, uploads, calls
 
     def test_emits_pairs_for_all_lines(self):
         """All lines in the byte range produce map output."""
-        lines      = ["hello world", "hello python", "world python"]
-        input_path = _make_input_file(lines)
-        try:
-            handles, paths = self._make_handles()
-
-            # Override OFFSET_END to cover the whole file
-            orig_end = mapper.OFFSET_END
-            mapper.OFFSET_END = os.path.getsize(input_path)
-
-            pairs_emitted = mapper._run_sync_core(_wordcount_map, input_path, handles)
-
-            mapper.OFFSET_END = orig_end
-        finally:
-            os.unlink(input_path)
+        input_data = _make_input_bytes(["hello world", "hello python", "world python"])
+        pairs_emitted, uploads, _ = self._run_with_offsets(
+            input_data,
+            start=0,
+            end=len(input_data),
+        )
 
         assert pairs_emitted > 0
-        # Each handle contains valid JSONL
-        for r_id, fh in handles.items():
-            fh.seek(0)
-            for line in fh.read().splitlines():
-                if line:
-                    pair = orjson.loads(line)
-                    assert len(pair) == 2, f"Expected [key, value], got {pair}"
+        assert uploads
+        for pair in self._collect_pairs(uploads):
+            assert len(pair) == 2, f"Expected [key, value], got {pair}"
 
-    def test_skips_partial_first_line_mid_file(self):
-        """When OFFSET_START > 0, the first (partial) line is skipped."""
-        lines      = ["line0 word", "line1 word", "line2 word"]
-        input_path = _make_input_file(lines)
-        try:
-            # Find byte position of start of second line
-            with open(input_path, "rb") as f:
-                first_line_bytes = len(f.readline())
+    def test_exact_line_boundary_start_keeps_the_line(self):
+        """A chunk that starts exactly on a newline boundary must keep that line."""
+        input_data = _make_input_bytes(["line0 word", "line1 word", "line2 word"])
+        first_line_bytes = len("line0 word\n".encode("utf-8"))
+        pairs_emitted, uploads, _ = self._run_with_offsets(
+            input_data,
+            start=first_line_bytes,
+            end=len(input_data),
+            user_map=_line_echo_map,
+        )
 
-            handles, paths = self._make_handles()
+        assert pairs_emitted == 2
+        values = [value for _, value in self._collect_pairs(uploads)]
+        assert values == ["line1 word", "line2 word"]
 
-            orig_start = mapper.OFFSET_START
-            orig_end   = mapper.OFFSET_END
-            mapper.OFFSET_START = first_line_bytes
-            mapper.OFFSET_END   = os.path.getsize(input_path)
+    def test_mid_line_start_skips_the_partial_record(self):
+        """A chunk that starts mid-line must discard that partial first record."""
+        input_data = _make_input_bytes(["line0 word", "line1 word", "line2 word"])
+        second_line_start = len("line0 word\n".encode("utf-8"))
+        mid_second_line = second_line_start + 3
+        pairs_emitted, uploads, calls = self._run_with_offsets(
+            input_data,
+            start=mid_second_line,
+            end=len(input_data),
+            user_map=_line_echo_map,
+        )
 
-            pairs_emitted = mapper._run_sync_core(_wordcount_map, input_path, handles)
-
-            mapper.OFFSET_START = orig_start
-            mapper.OFFSET_END   = orig_end
-        finally:
-            os.unlink(input_path)
-
-        # "line0" should not appear in output because it was a partial first line
-        all_keys = []
-        for fh in handles.values():
-            fh.seek(0)
-            for line in fh.read().splitlines():
-                if line:
-                    all_keys.append(orjson.loads(line)[0])
-
-        assert "line0" not in all_keys, "Partial first line should have been skipped"
+        assert pairs_emitted == 1
+        assert calls[0][2] == mid_second_line - 1
+        values = [value for _, value in self._collect_pairs(uploads)]
+        assert values == ["line2 word"]
 
     def test_empty_lines_are_skipped(self):
         """Blank lines produce no output pairs."""
-        lines      = ["", "   ", "hello world", ""]
-        input_path = _make_input_file(lines)
-        try:
-            handles, paths = self._make_handles()
-
-            orig_end       = mapper.OFFSET_END
-            mapper.OFFSET_END = os.path.getsize(input_path)
-
-            pairs_emitted  = mapper._run_sync_core(_wordcount_map, input_path, handles)
-            mapper.OFFSET_END = orig_end
-        finally:
-            os.unlink(input_path)
+        input_data = _make_input_bytes(["", "   ", "hello world", ""])
+        pairs_emitted, _, _ = self._run_with_offsets(
+            input_data,
+            start=0,
+            end=len(input_data),
+        )
 
         assert pairs_emitted == 2   # "hello" and "world"
 
     def test_keys_go_to_correct_partition(self):
         """Every key ends up in the partition file matching partition_key(key)."""
-        lines      = ["apple banana cherry"]
-        input_path = _make_input_file(lines)
-        try:
-            handles, paths = self._make_handles()
+        input_data = _make_input_bytes(["apple banana cherry"])
+        _, uploads, _ = self._run_with_offsets(
+            input_data,
+            start=0,
+            end=len(input_data),
+        )
 
-            orig_end       = mapper.OFFSET_END
-            mapper.OFFSET_END = os.path.getsize(input_path)
-
-            mapper._run_sync_core(_wordcount_map, input_path, handles)
-            mapper.OFFSET_END = orig_end
-        finally:
-            os.unlink(input_path)
-
-        for r_id, fh in handles.items():
-            fh.seek(0)
-            for line in fh.read().splitlines():
+        for path, content in uploads.items():
+            reducer_id = int(path.split("/reducer_")[1].split("/")[0])
+            for line in content.splitlines():
                 if line:
                     key = orjson.loads(line)[0]
                     expected_partition = _partition_key(key)
-                    assert expected_partition == r_id, (
-                        f"Key '{key}' ended up in partition {r_id} "
+                    assert expected_partition == reducer_id, (
+                        f"Key '{key}' ended up in partition {reducer_id} "
                         f"but should be in {expected_partition}"
                     )
+
+    def test_end_offset_mid_line_keeps_the_owned_record(self):
+        """A line that starts before OFFSET_END must be processed in full."""
+        input_data = _make_input_bytes(["alpha", "bravo charlie", "delta"])
+        second_line_start = len("alpha\n".encode("utf-8"))
+        end_mid_second = second_line_start + 5
+        pairs_emitted, uploads, _ = self._run_with_offsets(
+            input_data,
+            start=0,
+            end=end_mid_second,
+            user_map=_line_echo_map,
+        )
+
+        assert pairs_emitted == 2
+        values = [value for _, value in self._collect_pairs(uploads)]
+        assert values == ["alpha", "bravo charlie"]
+
+    def test_adjacent_chunks_cover_each_record_once(self):
+        """Two adjacent chunks must neither miss nor duplicate boundary-crossing lines."""
+        lines = ["alpha", "bravo charlie delta", "echo"]
+        input_data = _make_input_bytes(lines)
+        second_line_start = len("alpha\n".encode("utf-8"))
+        boundary = second_line_start + 6
+        first_pairs, first_uploads, _ = self._run_with_offsets(
+            input_data,
+            start=0,
+            end=boundary,
+            user_map=_line_echo_map,
+        )
+        second_pairs, second_uploads, _ = self._run_with_offsets(
+            input_data,
+            start=boundary,
+            end=len(input_data),
+            user_map=_line_echo_map,
+        )
+
+        assert first_pairs == 2
+        assert second_pairs == 1
+        values = [value for _, value in self._collect_pairs(first_uploads)]
+        values.extend(value for _, value in self._collect_pairs(second_uploads))
+        assert values == lines
+
+    def test_user_map_receives_line_start_offset(self):
+        """The key passed to user map must be the line's actual start offset."""
+        input_data = _make_input_bytes(["alpha", "bravo"])
+        second_line_start = len("alpha\n".encode("utf-8"))
+        pairs_emitted, uploads, _ = self._run_with_offsets(
+            input_data,
+            start=second_line_start,
+            end=len(input_data),
+            user_map=_offset_echo_map,
+        )
+
+        assert pairs_emitted == 1
+        values = [value for _, value in self._collect_pairs(uploads)]
+        assert values == [f"{second_line_start}:bravo"]
+
+    def test_streams_input_in_blocks_instead_of_per_line(self):
+        """Input should be fetched in buffered ranges rather than one call per line."""
+        lines = [f"line_{i}" for i in range(12)]
+        input_data = _make_input_bytes(lines)
+
+        pairs_emitted, uploads, calls = self._run_with_offsets(
+            input_data,
+            start=0,
+            end=len(input_data),
+            user_map=_line_echo_map,
+            block_size=16,
+        )
+
+        assert pairs_emitted == len(lines)
+        assert len(calls) < len(lines)
+        assert all(call[2] % 16 == 0 for call in calls[:-1])
+        assert len(uploads) > 1
+
+    def test_utf8_line_split_across_blocks_decodes_correctly(self):
+        """UTF-8 characters split across block boundaries must still decode correctly."""
+        input_data = "cafe\ncafé\ntea\n".encode("utf-8")
+
+        pairs_emitted, uploads, _ = self._run_with_offsets(
+            input_data,
+            start=0,
+            end=len(input_data),
+            user_map=_line_echo_map,
+            block_size=5,
+        )
+
+        assert pairs_emitted == 3
+        values = [value for _, value in self._collect_pairs(uploads)]
+        assert values == ["cafe", "café", "tea"]
+
+    def test_last_line_without_trailing_newline_is_processed(self):
+        """The final record should still be processed when EOF arrives before newline."""
+        input_data = _make_input_bytes(["alpha", "bravo"], trailing_newline=False)
+
+        pairs_emitted, uploads, _ = self._run_with_offsets(
+            input_data,
+            start=0,
+            end=len(input_data),
+            user_map=_line_echo_map,
+            block_size=4,
+        )
+
+        assert pairs_emitted == 2
+        values = [value for _, value in self._collect_pairs(uploads)]
+        assert values == ["alpha", "bravo"]
+
+    def test_outputs_are_sharded_per_input_batch(self):
+        """Reducer objects should be emitted as chunk shards, not one local file per reducer."""
+        input_data = _make_input_bytes(["alpha", "beta", "gamma", "delta"])
+
+        pairs_emitted, uploads, _ = self._run_with_offsets(
+            input_data,
+            start=0,
+            end=len(input_data),
+            user_map=_line_echo_map,
+            block_size=6,
+        )
+
+        assert pairs_emitted == 4
+        assert uploads
+        assert all("from_mapper_0_chunk_" in path for path in uploads)
 
 # ---------------------------------------------------------------------------
 # ── mapper ping ─────────────────────────────────────────────────────────────
@@ -324,23 +478,26 @@ class TestMapperRunIntegration:
         uploads: dict[str, bytes] = {}
 
         def fake_fget_object(bucket, obj_path, local_path):
-            if obj_path == "input/data.txt":
-                with open(local_path, "wb") as f:
-                    f.write(input_data)
-            elif obj_path == "code/wordcount.py":
-                code = (
-                    "def map(key, value):\n"
-                    "    for w in value.split():\n"
-                    "        yield w, '1'\n"
-                )
-                with open(local_path, "w") as f:
-                    f.write(code)
+            assert obj_path == "code/wordcount.py"
+            code = (
+                "def map(key, value):\n"
+                "    for w in value.split():\n"
+                "        yield w, '1'\n"
+            )
+            with open(local_path, "w") as f:
+                f.write(code)
+
+        def fake_get_object(bucket, obj_path, offset=0, length=0):
+            assert obj_path == "input/data.txt"
+            end_offset = None if not length else offset + length
+            return _FakeMinioResponse(input_data[offset:end_offset])
 
         def fake_put_object(bucket, path, data, size, content_type=None):
             uploads[path] = data.read()
 
         mock_minio = MagicMock()
         mock_minio.fget_object.side_effect = fake_fget_object
+        mock_minio.get_object.side_effect  = fake_get_object
         mock_minio.put_object.side_effect  = fake_put_object
 
         mock_http = AsyncMock()
@@ -352,7 +509,8 @@ class TestMapperRunIntegration:
 
         with patch.object(mapper, "minio_client", mock_minio), \
              patch.object(mapper, "_http_client", mock_http), \
-             patch.object(mapper, "OFFSET_START", 0):
+             patch.object(mapper, "OFFSET_START", 0), \
+             patch.object(mapper, "READ_BLOCK_SIZE", 8):
             await mapper.run()
 
         mapper.OFFSET_END = orig_end
@@ -360,7 +518,9 @@ class TestMapperRunIntegration:
         # Check uploads went to reducer-centric paths
         for path in uploads:
             assert f"reducer_" in path, f"Expected reducer-centric path, got: {path}"
-            assert f"from_mapper_0.jsonl" in path
+            assert f"from_mapper_0_chunk_" in path
+
+        assert len(uploads) > 1
 
         # Verify all uploaded content is valid JSONL with [key, value] arrays
         for path, content in uploads.items():
@@ -378,12 +538,14 @@ class TestMapperRunIntegration:
         pinged_statuses = []
 
         def fake_fget_object(bucket, obj_path, local_path):
-            if obj_path == "input/data.txt":
-                with open(local_path, "wb") as f:
-                    f.write(input_data)
-            elif obj_path == "code/wordcount.py":
-                with open(local_path, "w") as f:
-                    f.write("def map(key, value):\n    yield 'k', 'v'\n")
+            assert obj_path == "code/wordcount.py"
+            with open(local_path, "w") as f:
+                f.write("def map(key, value):\n    yield 'k', 'v'\n")
+
+        def fake_get_object(bucket, obj_path, offset=0, length=0):
+            assert obj_path == "input/data.txt"
+            end_offset = None if not length else offset + length
+            return _FakeMinioResponse(input_data[offset:end_offset])
 
         async def fake_post(url, json=None, timeout=None):
             if "/worker_ping" in url:
@@ -392,6 +554,7 @@ class TestMapperRunIntegration:
 
         mock_minio = MagicMock()
         mock_minio.fget_object.side_effect = fake_fget_object
+        mock_minio.get_object.side_effect = fake_get_object
         mock_minio.put_object = MagicMock()
 
         mock_http         = AsyncMock()
@@ -403,7 +566,8 @@ class TestMapperRunIntegration:
 
         with patch.object(mapper, "minio_client", mock_minio), \
              patch.object(mapper, "_http_client", mock_http), \
-             patch.object(mapper, "OFFSET_START", 0):
+             patch.object(mapper, "OFFSET_START", 0), \
+             patch.object(mapper, "READ_BLOCK_SIZE", 8):
             await mapper.run()
 
         mapper.OFFSET_END = orig_end

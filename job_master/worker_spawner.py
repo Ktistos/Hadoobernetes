@@ -175,10 +175,11 @@ def spawn_mapper(
     Spawn a mapper worker Kubernetes Job.
 
     The mapper pod will:
-      1. Download INPUT_PATH from MinIO
-      2. Read bytes [OFFSET_START, OFFSET_END)
+      1. Stream INPUT_PATH from MinIO in buffered range reads
+      2. Own lines according to [OFFSET_START, OFFSET_END) boundary rules
       3. Run the user's map() function from CODE_PATH
-      4. Write partitioned output to MinIO under INTERMEDIATE_PREFIX
+      4. Upload reducer-specific JSONL shard objects to MinIO under
+         intermediate/{JOB_ID}/reducer_{REDUCER_ID}/from_mapper_{MAP_ID}_chunk_{BATCH}.jsonl
       5. Send pings to JOB_MASTER_URL/worker_ping
     """
     job_name = _job_name("mapper", job_id, map_id, attempt)

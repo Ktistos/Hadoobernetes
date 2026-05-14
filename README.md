@@ -41,4 +41,22 @@ echo "print('hello')" > job.py
 hadoob submit --mappers 2 --reducers 1 --input-file ./input.txt --code ./job.py
 ```
 
-### 4. WIP, not fully tested out 
+### 4. WIP, not fully tested out
+
+### 5. Mapper/reducer intermediate data flow
+Current worker behavior on `windows_support`:
+
+* **Mapper input**: each mapper reads `INPUT_PATH` from MinIO with buffered range reads. The current buffer size is `64 MiB`.
+* **Chunk ownership**:
+  * if `OFFSET_START` lands in the middle of a line, the mapper skips that partial line
+  * if a line starts before `OFFSET_END`, that mapper owns the whole line even if the line ends after `OFFSET_END`
+* **Intermediate format**: mapper-emitted pairs are stored as `JSONL`, one `[key, value]` array per line.
+* **Intermediate object layout**: for each streamed input batch, the mapper uploads one shard object per reducer that received data:
+
+```text
+intermediate/{JOB_ID}/reducer_{REDUCER_ID}/from_mapper_{MAP_ID}_chunk_{BATCH_INDEX}.jsonl
+```
+
+* **Reducer input**: each reducer lists its own `intermediate/{JOB_ID}/reducer_{REDUCER_ID}/` prefix in MinIO and ingests every shard object it finds there.
+
+This means reducers are compatible with multiple mapper shard files per reducer directory, and mappers do not need one long-lived local output file per reducer.

@@ -63,6 +63,9 @@ MINIO_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
 MINIO_BUCKET     = os.environ["MINIO_BUCKET"]
 PING_INTERVAL    = int(os.environ.get("PING_INTERVAL", "10"))
 
+# Buffered range-read size for streaming input from MinIO.
+READ_BLOCK_SIZE  = 64 * 1024 * 1024
+
 # ── Clients ───────────────────────────────────────────────────────────────────
 
 minio_client = Minio(MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, secure=False)
@@ -123,46 +126,169 @@ def partition_key(key: str) -> int:
 
 # ── Core logic ────────────────────────────────────────────────────────────────
 
-def _run_sync_core(user_map, tmp_input_path: str, partition_handles: dict) -> int:
+def _read_input_range(object_path: str, offset: int, length: int) -> bytes:
     """
-    Read the assigned byte range, run the user map function, and write
-    JSONL partitions.
+    Read a byte range from the input object and always release the underlying
+    HTTP connection back to MinIO's pool.
+    """
+    response = minio_client.get_object(
+        MINIO_BUCKET,
+        object_path,
+        offset=offset,
+        length=length,
+    )
+    try:
+        return response.read()
+    finally:
+        response.close()
+        response.release_conn()
+
+
+def _iter_owned_line_batches(object_path: str):
+    """
+    Stream newline-delimited records from MinIO using buffered range reads and
+    yield complete owned lines grouped by the input batch that completed them.
+
+    Ownership rule:
+      - if OFFSET_START lands mid-line, discard bytes until the next newline
+      - a mapper owns every line whose first byte offset is < OFFSET_END
+      - if OFFSET_END lands mid-line, keep reading until that line completes
+    """
+    if OFFSET_END <= OFFSET_START:
+        return
+
+    carry = b""
+    carry_start = OFFSET_START
+    cursor = OFFSET_START
+    first_request = True
+    skipping_partial_line = False
+
+    while True:
+        request_offset = cursor
+        request_length = READ_BLOCK_SIZE
+
+        if first_request and OFFSET_START > 0:
+            request_offset -= 1
+            request_length += 1
+
+        payload = _read_input_range(object_path, request_offset, request_length)
+        include_previous_byte = first_request and OFFSET_START > 0
+        first_request = False
+
+        if include_previous_byte:
+            if not payload:
+                return
+            skipping_partial_line = payload[:1] != b"\n"
+            block = payload[1:]
+        else:
+            block = payload
+
+        cursor = request_offset + len(payload)
+
+        if not block:
+            if carry and not skipping_partial_line and carry_start < OFFSET_END:
+                yield [(carry_start, carry)]
+            return
+
+        data = carry + block
+        data_start = carry_start
+        scan_offset = 0
+
+        batch = []
+
+        while True:
+            newline_index = data.find(b"\n", scan_offset)
+            if newline_index == -1:
+                break
+
+            raw_line = data[scan_offset:newline_index + 1]
+            line_start = data_start + scan_offset
+            scan_offset = newline_index + 1
+
+            if skipping_partial_line:
+                skipping_partial_line = False
+                continue
+
+            if line_start >= OFFSET_END:
+                if batch:
+                    yield batch
+                return
+
+            batch.append((line_start, raw_line))
+
+        if batch:
+            yield batch
+
+        carry = data[scan_offset:]
+        carry_start = data_start + scan_offset
+
+
+def _partition_object_path(reducer_id: int, batch_index: int) -> str:
+    return (
+        f"intermediate/{JOB_ID}"
+        f"/reducer_{reducer_id}"
+        f"/from_mapper_{MAP_ID}_chunk_{batch_index:06d}.jsonl"
+    )
+
+
+def _upload_partition_batch(partition_buffers: dict[int, tempfile.SpooledTemporaryFile], batch_index: int) -> int:
+    """Upload one reducer shard object per non-empty partition buffer."""
+    uploaded = 0
+
+    for reducer_id, buffer in partition_buffers.items():
+        file_size = buffer.tell()
+        if file_size == 0:
+            continue
+
+        buffer.seek(0)
+        minio_client.put_object(
+            MINIO_BUCKET,
+            _partition_object_path(reducer_id, batch_index),
+            buffer,
+            file_size,
+            content_type="application/jsonl",
+        )
+        uploaded += 1
+
+    return uploaded
+
+
+def _run_sync_core(user_map, object_path: str = INPUT_PATH) -> int:
+    """
+    Stream the assigned byte range from MinIO, run the user map function, and
+    upload reducer shard objects incrementally per input batch.
     Returns the number of (key, value) pairs emitted.
     """
     pairs_emitted = 0
-    is_first_line  = True
-    bytes_consumed = 0
-    chunk_size     = OFFSET_END - OFFSET_START
+    batch_index = 0
 
-    with open(tmp_input_path, "rb") as f:
-        f.seek(OFFSET_START)
+    for line_batch in _iter_owned_line_batches(object_path):
+        partition_buffers: dict[int, tempfile.SpooledTemporaryFile] = {}
 
-        for raw_line in f:
-            bytes_consumed += len(raw_line)
-
-            # Skip the first partial line when starting mid-file.
-            if is_first_line:
-                is_first_line = False
-                if OFFSET_START > 0 and bytes_consumed <= chunk_size:
+        try:
+            for line_start, raw_line in line_batch:
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if not line.strip():
                     continue
 
-            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-            if not line.strip():
-                if bytes_consumed >= chunk_size:
-                    break
-                continue
+                for key, value in user_map(str(line_start), line):
+                    r_id = partition_key(key)
+                    if r_id not in partition_buffers:
+                        partition_buffers[r_id] = tempfile.SpooledTemporaryFile(
+                            max_size=READ_BLOCK_SIZE,
+                            mode="w+b",
+                        )
+                    partition_buffers[r_id].write(
+                        orjson.dumps([key, str(value)]) + b"\n"
+                    )
+                    pairs_emitted += 1
 
-            pairs = list(user_map(str(OFFSET_START + bytes_consumed), line))
+            _upload_partition_batch(partition_buffers, batch_index)
+        finally:
+            for buffer in partition_buffers.values():
+                buffer.close()
 
-            for key, value in pairs:
-                r_id = partition_key(key)
-                partition_handles[r_id].write(
-                    orjson.dumps([key, str(value)]).decode() + "\n"
-                )
-                pairs_emitted += 1
-
-            if bytes_consumed >= chunk_size:
-                break
+        batch_index += 1
 
     return pairs_emitted
 
@@ -173,53 +299,12 @@ async def run() -> None:
     await ping("started")
     ping_task = asyncio.create_task(ping_loop())
 
-    tmp_input_path    = None
-    partition_handles = {}
-    partition_paths   = {}
-
     try:
         # Step 1 — load user code
         user_map = load_user_map_function(CODE_PATH)
 
-        # Step 2 — download input file to local disk
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".input") as f:
-            minio_client.fget_object(MINIO_BUCKET, INPUT_PATH, f.name)
-            tmp_input_path = f.name
-
-        # Step 3 — open one JSONL partition file per reducer (Opt 1.2)
-        for reducer_id in range(NUM_REDUCERS):
-            tmp = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".jsonl", delete=False, encoding="utf-8"
-            )
-            partition_handles[reducer_id] = tmp
-            partition_paths[reducer_id]   = tmp.name
-
-        # Step 4 — stream byte range and emit pairs (Opt 1.1)
-        pairs_emitted = _run_sync_core(user_map, tmp_input_path, partition_handles)
-
-        # Step 4a — flush and close all partition handles
-        for fh in partition_handles.values():
-            fh.close()
-        partition_handles = {}
-
-        # Step 5 — upload partition files to MinIO (Opt 1.3)
-        # Path format groups files by destination reducer:
-        #   intermediate/{JOB_ID}/reducer_{r_id}/from_mapper_{MAP_ID}.jsonl
-        # This lets the reducer use list_objects() on its own prefix instead
-        # of blindly polling every mapper folder.
-        for reducer_id, local_path in partition_paths.items():
-            remote_path = (
-                f"intermediate/{JOB_ID}"
-                f"/reducer_{reducer_id}"
-                f"/from_mapper_{MAP_ID}.jsonl"
-            )
-            file_size = os.path.getsize(local_path)
-            with open(local_path, "rb") as fh:
-                minio_client.put_object(
-                    MINIO_BUCKET, remote_path,
-                    fh, file_size,
-                    content_type="application/jsonl",
-                )
+        # Step 2 — stream byte range from MinIO and upload reducer shards per batch.
+        pairs_emitted = _run_sync_core(user_map)
 
         prefix = f"mapper_{MAP_ID}"
         print(f"[{prefix}] Total pairs emitted: {pairs_emitted}")
@@ -234,21 +319,6 @@ async def run() -> None:
         raise exc
 
     finally:
-        if tmp_input_path and os.path.exists(tmp_input_path):
-            os.unlink(tmp_input_path)
-
-        for fh in partition_handles.values():
-            try:
-                fh.close()
-            except Exception:
-                pass
-
-        for local_path in partition_paths.values():
-            try:
-                os.unlink(local_path)
-            except Exception:
-                pass
-
         if _http_client and not _http_client.is_closed:
             await _http_client.aclose()
 
