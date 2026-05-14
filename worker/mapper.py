@@ -23,11 +23,10 @@ Required:
 Optional:
   PING_INTERVAL     Heartbeat cadence in seconds (default 10)
 
-Note: worker_spawner also sends INTERMEDIATE_PREFIX and DATABASE_URL.
+Note: worker_spawner also sends INTERMEDIATE_PREFIX.
   - INTERMEDIATE_PREFIX is not read here; intermediate paths are derived
     directly from JOB_ID for simplicity.
-  - DATABASE_URL is not read here; workers use MinIO, not PostgreSQL.
-  Both are harmless unused env vars.
+  It is a harmless unused env var.
 
 Design-doc references
 ----------------------

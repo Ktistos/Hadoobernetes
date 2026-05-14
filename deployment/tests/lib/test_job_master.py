@@ -28,7 +28,11 @@ import pytest
 # ---------------------------------------------------------------------------
 
 os.environ.setdefault("JOB_ID",                  "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
-os.environ.setdefault("DATABASE_URL",             "postgresql://test:test@localhost/test")
+os.environ.setdefault("POSTGRES_HOST",            "postgres")
+os.environ.setdefault("POSTGRES_PORT",            "5432")
+os.environ.setdefault("POSTGRES_USER",            "test")
+os.environ.setdefault("POSTGRES_PASSWORD",        "test")
+os.environ.setdefault("POSTGRES_DB",              "test")
 os.environ.setdefault("CLUSTER_MANAGER_URL",      "http://cluster-manager:8000")
 os.environ.setdefault("JOB_MASTER_SERVICE_URL",   "http://job-master-svc-aaaaaaaa:8000")
 os.environ.setdefault("MINIO_ENDPOINT",           "minio:9000")
@@ -146,9 +150,16 @@ class TestInitialization:
         db_mock.fetchrow = AsyncMock(return_value=None)
         db_mock.fetch    = AsyncMock(return_value=[])
 
-        with patch("state_machine.asyncpg.connect", return_value=db_mock):
+        with patch("state_machine.asyncpg.connect", return_value=db_mock) as mock_connect:
             with pytest.raises(RuntimeError, match="not found in DB"):
                 await machine.initialize()
+        mock_connect.assert_called_once_with(
+            user="test",
+            password="test",
+            database="test",
+            host="postgres",
+            port=5432,
+        )
 
     @pytest.mark.asyncio
     async def test_missing_config_raises(self):
@@ -160,9 +171,16 @@ class TestInitialization:
         ])
         db_mock.fetch = AsyncMock(return_value=[])
 
-        with patch("state_machine.asyncpg.connect", return_value=db_mock):
+        with patch("state_machine.asyncpg.connect", return_value=db_mock) as mock_connect:
             with pytest.raises(RuntimeError, match="job_config"):
                 await machine.initialize()
+        mock_connect.assert_called_once_with(
+            user="test",
+            password="test",
+            database="test",
+            host="postgres",
+            port=5432,
+        )
 
 # ===========================================================================
 # 3. JobStateMachine — run() resume logic

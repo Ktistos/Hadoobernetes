@@ -24,7 +24,6 @@ Environment variables consumed here (all set on the Job Master pod):
   MINIO_SECRET_KEY
   MINIO_BUCKET
   PING_INTERVAL           (optional, default "10")
-  DATABASE_URL            forwarded to workers so they can write map_output (if needed)
 """
 
 import logging
@@ -88,7 +87,6 @@ def _base_env(job_id: str, job: dict, config: dict) -> list[k8s_client.V1EnvVar]
         k8s_client.V1EnvVar(name="MINIO_ACCESS_KEY",      value=os.environ["MINIO_ACCESS_KEY"]),
         k8s_client.V1EnvVar(name="MINIO_SECRET_KEY",      value=os.environ["MINIO_SECRET_KEY"]),
         k8s_client.V1EnvVar(name="MINIO_BUCKET",          value=os.environ["MINIO_BUCKET"]),
-        k8s_client.V1EnvVar(name="DATABASE_URL",          value=os.environ["DATABASE_URL"]),
         # jobs table columns forwarded as env vars
         k8s_client.V1EnvVar(name="INPUT_PATH",            value=str(job["input_data_path"])),
         k8s_client.V1EnvVar(name="CODE_PATH",             value=str(job["code_location"])),

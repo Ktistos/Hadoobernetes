@@ -8,7 +8,11 @@ FastAPI entry point. Exposes the endpoints defined in the design doc:
 
 Environment variables (all required unless noted):
   JOB_ID                  UUID of the job this master owns
-  DATABASE_URL            asyncpg DSN  e.g. postgresql://user:pass@host:5432/db
+  POSTGRES_HOST           PostgreSQL service host, e.g. postgres
+  POSTGRES_PORT           (optional, default 5432)
+  POSTGRES_USER
+  POSTGRES_PASSWORD
+  POSTGRES_DB
   CLUSTER_MANAGER_URL     e.g. http://cluster-manager-service:8000
   JOB_MASTER_SERVICE_URL  URL workers use to reach *this* pod
   MINIO_ENDPOINT          e.g. minio-service:9000

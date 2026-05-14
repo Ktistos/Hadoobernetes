@@ -58,7 +58,11 @@ def spawn_job_master(job_id: UUID):
         ),
         env=[
             client.V1EnvVar(name="JOB_ID", value=str(job_id)),
-            client.V1EnvVar(name="DB_HOST", value=os.getenv("POSTGRES_HOST", "postgres")),
+            client.V1EnvVar(name="POSTGRES_HOST", value=os.getenv("POSTGRES_HOST", "postgres")),
+            client.V1EnvVar(name="POSTGRES_PORT", value=os.getenv("POSTGRES_PORT", os.getenv("DB_PORT", "5432"))),
+            client.V1EnvVar(name="POSTGRES_USER", value=os.getenv("POSTGRES_USER", "admin")),
+            client.V1EnvVar(name="POSTGRES_PASSWORD", value=os.getenv("POSTGRES_PASSWORD", "admin")),
+            client.V1EnvVar(name="POSTGRES_DB", value=os.getenv("POSTGRES_DB", "mapreduce")),
         ]
     )
 

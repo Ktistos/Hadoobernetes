@@ -5,6 +5,11 @@ import k8s_client
 def test_spawn_job_master(monkeypatch):
     mock_batch = MagicMock()
     monkeypatch.setattr(k8s_client.client, "BatchV1Api", lambda: mock_batch)
+    monkeypatch.setenv("POSTGRES_HOST", "postgres-service")
+    monkeypatch.setenv("POSTGRES_PORT", "5433")
+    monkeypatch.setenv("POSTGRES_USER", "cm-user")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "cm-pass")
+    monkeypatch.setenv("POSTGRES_DB", "cm-db")
     
     test_id = uuid4()
     k8s_client.spawn_job_master(test_id)
@@ -22,6 +27,13 @@ def test_spawn_job_master(monkeypatch):
     assert container.readiness_probe.http_get.port == 8000
     assert container.liveness_probe.http_get.path == "/healthz"
     assert container.liveness_probe.http_get.port == 8000
+    env = {item.name: item.value for item in container.env}
+    assert env["JOB_ID"] == str(test_id)
+    assert env["POSTGRES_HOST"] == "postgres-service"
+    assert env["POSTGRES_PORT"] == "5433"
+    assert env["POSTGRES_USER"] == "cm-user"
+    assert env["POSTGRES_PASSWORD"] == "cm-pass"
+    assert env["POSTGRES_DB"] == "cm-db"
 
 def test_terminate_job_pods(monkeypatch):
     mock_batch = MagicMock()

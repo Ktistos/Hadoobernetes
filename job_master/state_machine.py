@@ -111,7 +111,13 @@ class JobStateMachine:
     # -----------------------------------------------------------------------
 
     async def initialize(self):
-        self.db = await asyncpg.connect(os.environ["DATABASE_URL"])
+        self.db = await asyncpg.connect(
+            user=os.environ.get("POSTGRES_USER", "admin"),
+            password=os.environ.get("POSTGRES_PASSWORD", "admin"),
+            database=os.environ.get("POSTGRES_DB", "mapreduce"),
+            host=os.environ.get("POSTGRES_HOST", "postgres"),
+            port=int(os.environ.get("POSTGRES_PORT", os.environ.get("DB_PORT", "5432"))),
+        )
 
         jobs_row = await self.db.fetchrow(
             """

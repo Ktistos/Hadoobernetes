@@ -21,8 +21,8 @@ Required:
 Optional:
   PING_INTERVAL     Heartbeat cadence in seconds (default 10)
 
-Note: worker_spawner also sends INPUT_PATH, INTERMEDIATE_PREFIX, DATABASE_URL.
-  None of these are read by the reducer — they are harmless unused env vars.
+Note: worker_spawner also sends INPUT_PATH and INTERMEDIATE_PREFIX.
+  Neither is read by the reducer — they are harmless unused env vars.
 
 Design-doc references
 ----------------------
