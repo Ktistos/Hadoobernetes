@@ -22,7 +22,6 @@ Required:
 
 Optional:
   PING_INTERVAL     Heartbeat cadence in seconds (default 10)
-  PROFILE           Set to "1" to enable cProfile output (default off)
 
 Note: worker_spawner also sends INTERMEDIATE_PREFIX and DATABASE_URL.
   - INTERMEDIATE_PREFIX is not read here; intermediate paths are derived
@@ -37,14 +36,10 @@ Design-doc references
   §5.4  Job Execution Workflow (mapper phase)
 """
 
-import cProfile
 import hashlib
 import importlib.util
-import io
 import os
-import pstats
 import tempfile
-import time
 import asyncio
 
 import httpx
@@ -67,7 +62,6 @@ MINIO_ACCESS_KEY = os.environ["MINIO_ACCESS_KEY"]
 MINIO_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
 MINIO_BUCKET     = os.environ["MINIO_BUCKET"]
 PING_INTERVAL    = int(os.environ.get("PING_INTERVAL", "10"))
-PROFILE_ENABLED  = os.environ.get("PROFILE", "0") == "1"
 
 # ── Clients ───────────────────────────────────────────────────────────────────
 
@@ -127,57 +121,12 @@ def partition_key(key: str) -> int:
     return int(hashlib.md5(key.encode()).hexdigest(), 16) % NUM_REDUCERS
 
 
-# ── Profiling helpers ─────────────────────────────────────────────────────────
+# ── Core logic ────────────────────────────────────────────────────────────────
 
-class PhaseTimer:
-    """Lightweight wall-clock timer for named phases.  Prints a summary at the end.
-
-    Usage:
-        timer = PhaseTimer()
-        with timer.phase("download"):
-            ...
-        timer.report()
+def _run_sync_core(user_map, tmp_input_path: str, partition_handles: dict) -> int:
     """
-
-    def __init__(self):
-        self._phases: dict[str, float] = {}
-        self._start:  float | None     = None
-        self._current: str | None      = None
-
-    class _Phase:
-        def __init__(self, timer: "PhaseTimer", name: str):
-            self._timer = timer
-            self._name  = name
-
-        def __enter__(self):
-            self._t0 = time.perf_counter()
-            return self
-
-        def __exit__(self, *_):
-            elapsed = time.perf_counter() - self._t0
-            self._timer._phases[self._name] = (
-                self._timer._phases.get(self._name, 0.0) + elapsed
-            )
-
-    def phase(self, name: str) -> "_Phase":
-        return self._Phase(self, name)
-
-    def report(self, prefix: str = "") -> None:
-        total = sum(self._phases.values())
-        lines = [f"[{prefix}] Phase timings (total {total:.3f}s):"]
-        for name, elapsed in self._phases.items():
-            pct = (elapsed / total * 100) if total > 0 else 0
-            lines.append(f"    {name:<25} {elapsed:7.3f}s  ({pct:5.1f}%)")
-        print("\n".join(lines))
-
-
-# ── Core logic (separated for cProfile compatibility) ─────────────────────────
-
-def _run_sync_core(user_map, tmp_input_path: str, partition_paths: dict,
-                   partition_handles: dict, timer: PhaseTimer) -> int:
-    """
-    The CPU-bound portion of the mapper: read byte range, run map function,
-    write JSONL partitions.  Extracted so cProfile can wrap it cleanly.
+    Read the assigned byte range, run the user map function, and write
+    JSONL partitions.
     Returns the number of (key, value) pairs emitted.
     """
     pairs_emitted = 0
@@ -203,16 +152,14 @@ def _run_sync_core(user_map, tmp_input_path: str, partition_paths: dict,
                     break
                 continue
 
-            with timer.phase("map_function"):
-                pairs = list(user_map(str(OFFSET_START + bytes_consumed), line))
+            pairs = list(user_map(str(OFFSET_START + bytes_consumed), line))
 
-            with timer.phase("write_partitions"):
-                for key, value in pairs:
-                    r_id = partition_key(key)
-                    partition_handles[r_id].write(
-                        orjson.dumps([key, str(value)]).decode() + "\n"
-                    )
-                    pairs_emitted += 1
+            for key, value in pairs:
+                r_id = partition_key(key)
+                partition_handles[r_id].write(
+                    orjson.dumps([key, str(value)]).decode() + "\n"
+                )
+                pairs_emitted += 1
 
             if bytes_consumed >= chunk_size:
                 break
@@ -229,76 +176,53 @@ async def run() -> None:
     tmp_input_path    = None
     partition_handles = {}
     partition_paths   = {}
-    timer             = PhaseTimer()
-    profiler          = cProfile.Profile() if PROFILE_ENABLED else None
 
     try:
         # Step 1 — load user code
-        with timer.phase("load_user_code"):
-            user_map = load_user_map_function(CODE_PATH)
+        user_map = load_user_map_function(CODE_PATH)
 
         # Step 2 — download input file to local disk
-        with timer.phase("download_input"):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".input") as f:
-                minio_client.fget_object(MINIO_BUCKET, INPUT_PATH, f.name)
-                tmp_input_path = f.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".input") as f:
+            minio_client.fget_object(MINIO_BUCKET, INPUT_PATH, f.name)
+            tmp_input_path = f.name
 
         # Step 3 — open one JSONL partition file per reducer (Opt 1.2)
-        with timer.phase("open_partition_files"):
-            for reducer_id in range(NUM_REDUCERS):
-                tmp = tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".jsonl", delete=False, encoding="utf-8"
-                )
-                partition_handles[reducer_id] = tmp
-                partition_paths[reducer_id]   = tmp.name
+        for reducer_id in range(NUM_REDUCERS):
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".jsonl", delete=False, encoding="utf-8"
+            )
+            partition_handles[reducer_id] = tmp
+            partition_paths[reducer_id]   = tmp.name
 
         # Step 4 — stream byte range and emit pairs (Opt 1.1)
-        if profiler:
-            profiler.enable()
-
-        pairs_emitted = _run_sync_core(
-            user_map, tmp_input_path, partition_paths, partition_handles, timer
-        )
-
-        if profiler:
-            profiler.disable()
+        pairs_emitted = _run_sync_core(user_map, tmp_input_path, partition_handles)
 
         # Step 4a — flush and close all partition handles
-        with timer.phase("close_partition_files"):
-            for fh in partition_handles.values():
-                fh.close()
-            partition_handles = {}
+        for fh in partition_handles.values():
+            fh.close()
+        partition_handles = {}
 
         # Step 5 — upload partition files to MinIO (Opt 1.3)
         # Path format groups files by destination reducer:
         #   intermediate/{JOB_ID}/reducer_{r_id}/from_mapper_{MAP_ID}.jsonl
         # This lets the reducer use list_objects() on its own prefix instead
         # of blindly polling every mapper folder.
-        with timer.phase("upload_partitions"):
-            for reducer_id, local_path in partition_paths.items():
-                remote_path = (
-                    f"intermediate/{JOB_ID}"
-                    f"/reducer_{reducer_id}"
-                    f"/from_mapper_{MAP_ID}.jsonl"
+        for reducer_id, local_path in partition_paths.items():
+            remote_path = (
+                f"intermediate/{JOB_ID}"
+                f"/reducer_{reducer_id}"
+                f"/from_mapper_{MAP_ID}.jsonl"
+            )
+            file_size = os.path.getsize(local_path)
+            with open(local_path, "rb") as fh:
+                minio_client.put_object(
+                    MINIO_BUCKET, remote_path,
+                    fh, file_size,
+                    content_type="application/jsonl",
                 )
-                file_size = os.path.getsize(local_path)
-                with open(local_path, "rb") as fh:
-                    minio_client.put_object(
-                        MINIO_BUCKET, remote_path,
-                        fh, file_size,
-                        content_type="application/jsonl",
-                    )
 
-        # ── Profiling output ──────────────────────────────────────────────────
         prefix = f"mapper_{MAP_ID}"
-        timer.report(prefix=prefix)
         print(f"[{prefix}] Total pairs emitted: {pairs_emitted}")
-
-        if profiler:
-            stream = io.StringIO()
-            ps     = pstats.Stats(profiler, stream=stream).sort_stats("cumulative")
-            ps.print_stats(20)  # top 20 functions by cumulative time
-            print(f"[{prefix}] cProfile top-20:\n{stream.getvalue()}")
 
         ping_task.cancel()
         await ping("completed")

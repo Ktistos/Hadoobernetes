@@ -154,15 +154,12 @@ class TestRunSyncCore:
         input_path = _make_input_file(lines)
         try:
             handles, paths = self._make_handles()
-            timer          = mapper.PhaseTimer()
 
             # Override OFFSET_END to cover the whole file
             orig_end = mapper.OFFSET_END
             mapper.OFFSET_END = os.path.getsize(input_path)
 
-            pairs_emitted = mapper._run_sync_core(
-                _wordcount_map, input_path, paths, handles, timer
-            )
+            pairs_emitted = mapper._run_sync_core(_wordcount_map, input_path, handles)
 
             mapper.OFFSET_END = orig_end
         finally:
@@ -187,16 +184,13 @@ class TestRunSyncCore:
                 first_line_bytes = len(f.readline())
 
             handles, paths = self._make_handles()
-            timer          = mapper.PhaseTimer()
 
             orig_start = mapper.OFFSET_START
             orig_end   = mapper.OFFSET_END
             mapper.OFFSET_START = first_line_bytes
             mapper.OFFSET_END   = os.path.getsize(input_path)
 
-            pairs_emitted = mapper._run_sync_core(
-                _wordcount_map, input_path, paths, handles, timer
-            )
+            pairs_emitted = mapper._run_sync_core(_wordcount_map, input_path, handles)
 
             mapper.OFFSET_START = orig_start
             mapper.OFFSET_END   = orig_end
@@ -219,14 +213,11 @@ class TestRunSyncCore:
         input_path = _make_input_file(lines)
         try:
             handles, paths = self._make_handles()
-            timer          = mapper.PhaseTimer()
 
             orig_end       = mapper.OFFSET_END
             mapper.OFFSET_END = os.path.getsize(input_path)
 
-            pairs_emitted  = mapper._run_sync_core(
-                _wordcount_map, input_path, paths, handles, timer
-            )
+            pairs_emitted  = mapper._run_sync_core(_wordcount_map, input_path, handles)
             mapper.OFFSET_END = orig_end
         finally:
             os.unlink(input_path)
@@ -239,14 +230,11 @@ class TestRunSyncCore:
         input_path = _make_input_file(lines)
         try:
             handles, paths = self._make_handles()
-            timer          = mapper.PhaseTimer()
 
             orig_end       = mapper.OFFSET_END
             mapper.OFFSET_END = os.path.getsize(input_path)
 
-            mapper._run_sync_core(
-                _wordcount_map, input_path, paths, handles, timer
-            )
+            mapper._run_sync_core(_wordcount_map, input_path, handles)
             mapper.OFFSET_END = orig_end
         finally:
             os.unlink(input_path)
@@ -261,28 +249,6 @@ class TestRunSyncCore:
                         f"Key '{key}' ended up in partition {r_id} "
                         f"but should be in {expected_partition}"
                     )
-
-    def test_phase_timer_records_phases(self):
-        """PhaseTimer must record map_function and write_partitions phases."""
-        lines      = ["hello world"]
-        input_path = _make_input_file(lines)
-        try:
-            handles, paths = self._make_handles()
-            timer          = mapper.PhaseTimer()
-
-            orig_end       = mapper.OFFSET_END
-            mapper.OFFSET_END = os.path.getsize(input_path)
-
-            mapper._run_sync_core(_wordcount_map, input_path, paths, handles, timer)
-            mapper.OFFSET_END = orig_end
-        finally:
-            os.unlink(input_path)
-
-        assert "map_function"      in timer._phases
-        assert "write_partitions"  in timer._phases
-        assert timer._phases["map_function"] > 0
-        assert timer._phases["write_partitions"] > 0
-
 
 # ---------------------------------------------------------------------------
 # ── mapper ping ─────────────────────────────────────────────────────────────
@@ -526,8 +492,7 @@ class TestReducerIngestPartition:
         conn, cursor, db_path = self._make_db()
         try:
             stream = io.BytesIO(content)
-            timer  = reducer.PhaseTimer()
-            rows   = reducer._ingest_partition(cursor, stream, timer)
+            rows   = reducer._ingest_partition(cursor, stream)
             conn.commit()
 
             assert rows == 3
@@ -546,8 +511,7 @@ class TestReducerIngestPartition:
         conn, cursor, db_path = self._make_db()
         try:
             stream = io.BytesIO(content)
-            timer  = reducer.PhaseTimer()
-            rows   = reducer._ingest_partition(cursor, stream, timer)
+            rows   = reducer._ingest_partition(cursor, stream)
             conn.commit()
 
             assert rows == 2
@@ -564,8 +528,7 @@ class TestReducerIngestPartition:
         conn, cursor, db_path = self._make_db()
         try:
             stream = io.BytesIO(content)
-            timer  = reducer.PhaseTimer()
-            rows   = reducer._ingest_partition(cursor, stream, timer)
+            rows   = reducer._ingest_partition(cursor, stream)
             conn.commit()
 
             assert rows == n_rows
@@ -574,22 +537,6 @@ class TestReducerIngestPartition:
         finally:
             conn.close()
             os.unlink(db_path)
-
-    def test_timer_records_deserialise_and_insert(self):
-        """PhaseTimer must record both 'deserialise' and 'sqlite_insert'."""
-        content = _make_jsonl_content([("k", "v")])
-        conn, cursor, db_path = self._make_db()
-        try:
-            stream = io.BytesIO(content)
-            timer  = reducer.PhaseTimer()
-            reducer._ingest_partition(cursor, stream, timer)
-
-            assert "deserialise"   in timer._phases
-            assert "sqlite_insert" in timer._phases
-        finally:
-            conn.close()
-            os.unlink(db_path)
-
 
 # ---------------------------------------------------------------------------
 # ── reducer._run_reduce_phase ────────────────────────────────────────────────
@@ -613,11 +560,7 @@ class TestReducerRunReducePhase:
         conn, _, db_path = self._setup_db_with_data(pairs)
 
         out_buf = io.BytesIO()
-        timer   = reducer.PhaseTimer()
-
-        result_count = reducer._run_reduce_phase(
-            conn, _wordcount_reduce, out_buf, timer, profiler=None
-        )
+        result_count = reducer._run_reduce_phase(conn, _wordcount_reduce, out_buf)
         conn.close()
         os.unlink(db_path)
 
@@ -639,8 +582,7 @@ class TestReducerRunReducePhase:
         conn, _, db_path = self._setup_db_with_data(pairs)
 
         out_buf = io.BytesIO()
-        timer   = reducer.PhaseTimer()
-        reducer._run_reduce_phase(conn, _wordcount_reduce, out_buf, timer, profiler=None)
+        reducer._run_reduce_phase(conn, _wordcount_reduce, out_buf)
         conn.close()
         os.unlink(db_path)
 
@@ -655,10 +597,7 @@ class TestReducerRunReducePhase:
         conn, _ = reducer._setup_sqlite(db_path)
 
         out_buf = io.BytesIO()
-        timer   = reducer.PhaseTimer()
-        result_count = reducer._run_reduce_phase(
-            conn, _wordcount_reduce, out_buf, timer, profiler=None
-        )
+        result_count = reducer._run_reduce_phase(conn, _wordcount_reduce, out_buf)
         conn.close()
         os.unlink(db_path)
 
@@ -672,8 +611,7 @@ class TestReducerRunReducePhase:
         conn, _, db_path = self._setup_db_with_data(pairs)
 
         out_buf = io.BytesIO()
-        timer   = reducer.PhaseTimer()
-        reducer._run_reduce_phase(conn, _wordcount_reduce, out_buf, timer, profiler=None)
+        reducer._run_reduce_phase(conn, _wordcount_reduce, out_buf)
         conn.close()
         os.unlink(db_path)
 
@@ -685,21 +623,6 @@ class TestReducerRunReducePhase:
                 results[k] = v
 
         assert results["hotkey"] == str(n)
-
-    def test_timer_records_reduce_and_write_phases(self):
-        """PhaseTimer must record 'reduce_function' and 'write_output'."""
-        pairs   = [("apple", "1")]
-        conn, _, db_path = self._setup_db_with_data(pairs)
-
-        out_buf = io.BytesIO()
-        timer   = reducer.PhaseTimer()
-        reducer._run_reduce_phase(conn, _wordcount_reduce, out_buf, timer, profiler=None)
-        conn.close()
-        os.unlink(db_path)
-
-        assert "reduce_function" in timer._phases
-        assert "write_output"    in timer._phases
-
 
 # ---------------------------------------------------------------------------
 # ── reducer ping ────────────────────────────────────────────────────────────
@@ -905,38 +828,3 @@ class TestReducerRunIntegration:
 
         # Verify an empty output file was uploaded
         mock_minio.put_object.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# ── PhaseTimer ───────────────────────────────────────────────────────────────
-# ---------------------------------------------------------------------------
-
-class TestPhaseTimer:
-
-    def test_records_single_phase(self):
-        t = mapper.PhaseTimer()
-        with t.phase("test_phase"):
-            pass
-        assert "test_phase" in t._phases
-        assert t._phases["test_phase"] >= 0
-
-    def test_accumulates_repeated_phase(self):
-        t = mapper.PhaseTimer()
-        with t.phase("p"):
-            pass
-        first = t._phases["p"]
-        with t.phase("p"):
-            pass
-        assert t._phases["p"] >= first
-
-    def test_report_does_not_raise(self):
-        t = mapper.PhaseTimer()
-        with t.phase("a"):
-            pass
-        with t.phase("b"):
-            pass
-        t.report(prefix="test")  # must not raise
-
-    def test_report_on_empty_timer_does_not_crash(self):
-        t = mapper.PhaseTimer()
-        t.report(prefix="empty")  # must not raise or divide by zero

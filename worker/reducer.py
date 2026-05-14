@@ -20,7 +20,6 @@ Required:
 
 Optional:
   PING_INTERVAL     Heartbeat cadence in seconds (default 10)
-  PROFILE           Set to "1" to enable cProfile output (default off)
 
 Note: worker_spawner also sends INPUT_PATH, INTERMEDIATE_PREFIX, DATABASE_URL.
   None of these are read by the reducer — they are harmless unused env vars.
@@ -32,14 +31,10 @@ Design-doc references
 """
 
 import asyncio
-import cProfile
 import importlib.util
-import io as stdlib_io
 import os
-import pstats
 import sqlite3
 import tempfile
-import time
 
 import httpx
 import orjson
@@ -59,7 +54,6 @@ MINIO_ACCESS_KEY = os.environ["MINIO_ACCESS_KEY"]
 MINIO_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
 MINIO_BUCKET     = os.environ["MINIO_BUCKET"]
 PING_INTERVAL    = int(os.environ.get("PING_INTERVAL", "10"))
-PROFILE_ENABLED  = os.environ.get("PROFILE", "0") == "1"
 
 # SQLite batch size: number of rows inserted per executemany call.
 # 5000 is a good balance between memory use and insert overhead.
@@ -114,41 +108,6 @@ def load_user_reduce_function(code_path: str):
         return module.reduce
 
 
-# ── Profiling helpers ─────────────────────────────────────────────────────────
-
-class PhaseTimer:
-    """Same wall-clock phase timer as in mapper.py."""
-
-    def __init__(self):
-        self._phases: dict[str, float] = {}
-
-    class _Phase:
-        def __init__(self, timer: "PhaseTimer", name: str):
-            self._timer = timer
-            self._name  = name
-
-        def __enter__(self):
-            self._t0 = time.perf_counter()
-            return self
-
-        def __exit__(self, *_):
-            elapsed = time.perf_counter() - self._t0
-            self._timer._phases[self._name] = (
-                self._timer._phases.get(self._name, 0.0) + elapsed
-            )
-
-    def phase(self, name: str) -> "_Phase":
-        return self._Phase(self, name)
-
-    def report(self, prefix: str = "") -> None:
-        total = sum(self._phases.values())
-        lines = [f"[{prefix}] Phase timings (total {total:.3f}s):"]
-        for name, elapsed in self._phases.items():
-            pct = (elapsed / total * 100) if total > 0 else 0
-            lines.append(f"    {name:<25} {elapsed:7.3f}s  ({pct:5.1f}%)")
-        print("\n".join(lines))
-
-
 # ── SQLite helpers ────────────────────────────────────────────────────────────
 
 def _setup_sqlite(db_path: str) -> tuple[sqlite3.Connection, sqlite3.Cursor]:
@@ -173,7 +132,6 @@ def _setup_sqlite(db_path: str) -> tuple[sqlite3.Connection, sqlite3.Cursor]:
 def _ingest_partition(
     cursor:   sqlite3.Cursor,
     response,                   # urllib3 HTTPResponse from minio.get_object()
-    timer:    PhaseTimer,
 ) -> int:
     """
     Stream one partition file from a MinIO HTTPResponse directly into SQLite.
@@ -189,24 +147,21 @@ def _ingest_partition(
         if not raw_line:
             continue
 
-        with timer.phase("deserialise"):
-            pair = orjson.loads(raw_line)
+        pair = orjson.loads(raw_line)
 
         batch.append((pair[0], pair[1]))
 
         if len(batch) >= SQLITE_BATCH_SIZE:
-            with timer.phase("sqlite_insert"):
-                cursor.executemany(
-                    "INSERT INTO map_data (key, value) VALUES (?, ?)", batch
-                )
+            cursor.executemany(
+                "INSERT INTO map_data (key, value) VALUES (?, ?)", batch
+            )
             rows_added += len(batch)
             batch.clear()
 
     if batch:
-        with timer.phase("sqlite_insert"):
-            cursor.executemany(
-                "INSERT INTO map_data (key, value) VALUES (?, ?)", batch
-            )
+        cursor.executemany(
+            "INSERT INTO map_data (key, value) VALUES (?, ?)", batch
+        )
         rows_added += len(batch)
 
     return rows_added
@@ -216,22 +171,16 @@ def _run_reduce_phase(
     conn:        sqlite3.Connection,
     user_reduce,
     out_fh,                         # binary file handle for output JSONL
-    timer:       PhaseTimer,
-    profiler:    cProfile.Profile | None,
 ) -> int:
     """
     Index the map_data table, iterate in sorted key order, call user_reduce()
     per key group, and write output lines.  Returns total output pairs written.
     """
-    with timer.phase("build_index"):
-        conn.cursor().execute("CREATE INDEX idx_key ON map_data (key)")
-        conn.commit()
+    conn.cursor().execute("CREATE INDEX idx_key ON map_data (key)")
+    conn.commit()
 
     sort_cursor = conn.cursor()
     sort_cursor.execute("SELECT key, value FROM map_data ORDER BY key")
-
-    if profiler:
-        profiler.enable()
 
     current_key    = None
     current_values = []
@@ -240,14 +189,12 @@ def _run_reduce_phase(
     for db_key, db_value in sort_cursor:
         if db_key != current_key:
             if current_key is not None:
-                with timer.phase("reduce_function"):
-                    pairs = list(user_reduce(current_key, current_values))
-                with timer.phase("write_output"):
-                    for out_key, out_value in pairs:
-                        out_fh.write(
-                            orjson.dumps([out_key, str(out_value)]) + b"\n"
-                        )
-                        result_count += 1
+                pairs = list(user_reduce(current_key, current_values))
+                for out_key, out_value in pairs:
+                    out_fh.write(
+                        orjson.dumps([out_key, str(out_value)]) + b"\n"
+                    )
+                    result_count += 1
             current_key    = db_key
             current_values = [db_value]
         else:
@@ -255,17 +202,12 @@ def _run_reduce_phase(
 
     # Flush the last key group
     if current_key is not None:
-        with timer.phase("reduce_function"):
-            pairs = list(user_reduce(current_key, current_values))
-        with timer.phase("write_output"):
-            for out_key, out_value in pairs:
-                out_fh.write(
-                    orjson.dumps([out_key, str(out_value)]) + b"\n"
-                )
-                result_count += 1
-
-    if profiler:
-        profiler.disable()
+        pairs = list(user_reduce(current_key, current_values))
+        for out_key, out_value in pairs:
+            out_fh.write(
+                orjson.dumps([out_key, str(out_value)]) + b"\n"
+            )
+            result_count += 1
 
     return result_count
 
@@ -278,19 +220,15 @@ async def run() -> None:
 
     db_path         = None
     tmp_output_path = None
-    timer           = PhaseTimer()
-    profiler        = cProfile.Profile() if PROFILE_ENABLED else None
 
     try:
         # Step 1 — load user reduce function
-        with timer.phase("load_user_code"):
-            user_reduce = load_user_reduce_function(CODE_PATH)
+        user_reduce = load_user_reduce_function(CODE_PATH)
 
         # Step 2 — set up SQLite database on local ephemeral disk
-        with timer.phase("sqlite_setup"):
-            db_fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-            os.close(db_fd)
-            conn, cursor   = _setup_sqlite(db_path)
+        db_fd, db_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(db_fd)
+        conn, cursor   = _setup_sqlite(db_path)
 
         # Step 3 — Shuffle: list our reducer's prefix folder and stream all
         # partition files directly from MinIO into SQLite (Opt 2.1 + 3.3).
@@ -308,9 +246,8 @@ async def run() -> None:
         for obj in objects:
             response = None
             try:
-                with timer.phase("minio_get_object"):
-                    response = minio_client.get_object(MINIO_BUCKET, obj.object_name)
-                rows = _ingest_partition(cursor, response, timer)
+                response = minio_client.get_object(MINIO_BUCKET, obj.object_name)
+                rows = _ingest_partition(cursor, response)
                 total_rows += rows
             finally:
                 # Always release the urllib3 socket back to the pool.
@@ -318,8 +255,7 @@ async def run() -> None:
                     response.close()
                     response.release_conn()
 
-        with timer.phase("sqlite_commit"):
-            conn.commit()
+        conn.commit()
 
         print(f"[reducer_{REDUCER_ID}] Shuffle complete: {total_rows} rows ingested.")
 
@@ -328,34 +264,23 @@ async def run() -> None:
         os.close(tmp_out_fd)
 
         with open(tmp_output_path, "wb") as out_fh:
-            result_count = _run_reduce_phase(conn, user_reduce, out_fh, timer, profiler)
+            result_count = _run_reduce_phase(conn, user_reduce, out_fh)
 
         conn.close()
         print(f"[reducer_{REDUCER_ID}] Reduce complete: {result_count} output pairs.")
 
         # Step 5 — Upload final output to MinIO
-        with timer.phase("upload_output"):
-            output_size = os.path.getsize(tmp_output_path)
-            with open(tmp_output_path, "rb") as fh:
-                minio_client.put_object(
-                    MINIO_BUCKET, OUTPUT_PATH,
-                    fh, output_size,
-                    content_type="application/jsonl",
-                )
-
-        # ── Profiling output ──────────────────────────────────────────────────
-        prefix_log = f"reducer_{REDUCER_ID}"
-        timer.report(prefix=prefix_log)
-
-        if profiler:
-            stream = stdlib_io.StringIO()
-            ps     = pstats.Stats(profiler, stream=stream).sort_stats("cumulative")
-            ps.print_stats(20)
-            print(f"[{prefix_log}] cProfile top-20:\n{stream.getvalue()}")
+        output_size = os.path.getsize(tmp_output_path)
+        with open(tmp_output_path, "rb") as fh:
+            minio_client.put_object(
+                MINIO_BUCKET, OUTPUT_PATH,
+                fh, output_size,
+                content_type="application/jsonl",
+            )
 
         ping_task.cancel()
         await ping("completed")
-        print(f"[{prefix_log}] Reducer completed successfully.")
+        print(f"[reducer_{REDUCER_ID}] Reducer completed successfully.")
 
     except Exception as exc:
         ping_task.cancel()

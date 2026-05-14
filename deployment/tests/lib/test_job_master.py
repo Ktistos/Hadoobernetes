@@ -2,8 +2,8 @@
 tests/test_job_master.py
 ========================
 Comprehensive unit tests for all four Job Master modules:
-  - state_machine.py   (JobStateMachine, TaskState, PhaseTimer)
-  - main.py            (FastAPI endpoints, /debug/profile)
+  - state_machine.py   (JobStateMachine, TaskState)
+  - main.py            (FastAPI endpoints)
   - heartbeat_monitor.py (snapshot_task, build_report, log_report)
   - worker_spawner.py  (_job_name, _base_env, spawn_mapper, spawn_reducer)
 
@@ -18,7 +18,6 @@ import asyncio
 import os
 import sqlite3
 import tempfile
-import time
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
@@ -38,11 +37,10 @@ os.environ.setdefault("MINIO_ACCESS_KEY",         "minioadmin")
 os.environ.setdefault("MINIO_SECRET_KEY",         "minioadmin")
 os.environ.setdefault("MINIO_BUCKET",             "mapreduce")
 os.environ.setdefault("K8S_NAMESPACE",            "default")
-os.environ.setdefault("PROFILE",                  "0")
 
 import state_machine as sm_module
 from state_machine import (
-    JobStateMachine, TaskState, PhaseTimer,
+    JobStateMachine, TaskState,
     JOB_STATUS_PENDING, JOB_STATUS_MAPPING, JOB_STATUS_REDUCING,
     JOB_STATUS_COMPLETED, JOB_STATUS_FAILED,
     TASK_STATUS_PENDING, TASK_STATUS_RUNNING,
@@ -116,68 +114,7 @@ def add_reduce_tasks(machine: JobStateMachine, statuses: list[str]) -> None:
 
 
 # ===========================================================================
-# 1. PhaseTimer
-# ===========================================================================
-
-class TestPhaseTimer:
-
-    def test_records_single_phase(self):
-        t = PhaseTimer()
-        with t.phase("init"):
-            time.sleep(0.01)
-        snap = t.snapshot()
-        assert "init" in snap
-        assert snap["init"] >= 0.005   # at least 5ms
-
-    def test_accumulates_repeated_calls(self):
-        t = PhaseTimer()
-        for _ in range(3):
-            with t.phase("db_query"):
-                time.sleep(0.005)
-        snap = t.snapshot()
-        # Three calls of ~5ms each should total at least 10ms
-        assert snap["db_query"] >= 0.010
-
-    def test_multiple_distinct_phases(self):
-        t = PhaseTimer()
-        with t.phase("alpha"):
-            time.sleep(0.005)
-        with t.phase("beta"):
-            time.sleep(0.005)
-        snap = t.snapshot()
-        assert "alpha" in snap
-        assert "beta"  in snap
-        assert snap["alpha"] != snap["beta"] or True   # just verify both exist
-
-    def test_snapshot_returns_copy(self):
-        """Mutating the returned dict must not affect the timer internals."""
-        t = PhaseTimer()
-        with t.phase("x"):
-            pass
-        snap = t.snapshot()
-        snap["x"] = 999.0
-        assert t.snapshot()["x"] != 999.0
-
-    def test_report_does_not_raise_when_empty(self):
-        """report() on an empty timer must print gracefully without ZeroDivisionError."""
-        t = PhaseTimer()
-        t.report(prefix="empty")   # must not raise
-
-    def test_report_does_not_raise_with_data(self):
-        t = PhaseTimer()
-        with t.phase("work"):
-            time.sleep(0.005)
-        t.report(prefix="test")   # must not raise
-
-    def test_zero_total_does_not_divide_by_zero(self):
-        """If all phases record 0.0s, percentage must not crash."""
-        t = PhaseTimer()
-        t._phases["instant"] = 0.0
-        t.report()   # must not raise
-
-
-# ===========================================================================
-# 2. TaskState
+# 1. TaskState
 # ===========================================================================
 
 class TestTaskState:
@@ -228,16 +165,8 @@ class TestInitialization:
             with pytest.raises(RuntimeError, match="job_config"):
                 await machine.initialize()
 
-    @pytest.mark.asyncio
-    async def test_timer_exists_after_init(self):
-        """state_machine.timer must exist even before initialize() is called."""
-        machine = make_sm()
-        assert hasattr(machine, "timer")
-        assert isinstance(machine.timer, PhaseTimer)
-
-
 # ===========================================================================
-# 4. JobStateMachine — run() resume logic
+# 3. JobStateMachine — run() resume logic
 # ===========================================================================
 
 class TestRunResumeLogic:
@@ -722,91 +651,8 @@ class TestHandlePingDispatch:
 
         mock_handler.assert_called_once_with(1, "started")
 
-    @pytest.mark.asyncio
-    async def test_timer_phase_recorded_for_each_ping(self):
-        """handle_ping wraps its work in timer.phase('handle_ping')."""
-        machine = make_sm()
-        add_map_tasks(machine, [TASK_STATUS_RUNNING])
-
-        with patch.object(machine, "_handle_mapper_ping", new_callable=AsyncMock):
-            await machine.handle_ping("mapper_0", "mapper", "alive")
-
-        assert "handle_ping" in machine.timer.snapshot()
-
-
 # ===========================================================================
-# 13. Profiling — PhaseTimer integration in state_machine
-# ===========================================================================
-
-class TestProfilingIntegration:
-
-    @pytest.mark.asyncio
-    async def test_initialize_records_db_phases(self):
-        """All DB operations in initialize() must be wrapped in timer phases."""
-        machine = make_sm()
-        # Pre-load state so initialize() doesn't actually connect to DB
-        machine.job    = dict(SAMPLE_JOB)
-        machine.config = dict(SAMPLE_CONFIG)
-
-        # Simulate what initialize() does with the timer directly
-        with machine.timer.phase("db_connect"):
-            pass
-        with machine.timer.phase("db_fetch_job"):
-            pass
-
-        snap = machine.timer.snapshot()
-        assert "db_connect"   in snap
-        assert "db_fetch_job" in snap
-
-    @pytest.mark.asyncio
-    async def test_spawn_mapper_records_k8s_phase(self):
-        """k8s_spawn_mapper must appear in the timer after spawning."""
-        machine = make_sm()
-        add_map_tasks(machine, [TASK_STATUS_PENDING])
-
-        machine.db.fetchrow = AsyncMock(return_value={
-            "byte_offset_start": 0,
-            "byte_offset_end":   500,
-        })
-
-        with patch("state_machine.spawn_mapper") as mock_spawn, \
-             patch.object(machine, "_reset_timer"):
-            await machine._spawn_and_track_mapper(0)
-
-        snap = machine.timer.snapshot()
-        assert "k8s_spawn_mapper" in snap
-
-    @pytest.mark.asyncio
-    async def test_spawn_reducer_records_k8s_phase(self):
-        machine = make_sm()
-        add_reduce_tasks(machine, [TASK_STATUS_PENDING])
-
-        with patch("state_machine.spawn_reducer") as mock_spawn, \
-             patch.object(machine, "_reset_timer"):
-            await machine._spawn_and_track_reducer(0)
-
-        snap = machine.timer.snapshot()
-        assert "k8s_spawn_reducer" in snap
-
-    @pytest.mark.asyncio
-    async def test_handle_ping_records_phase(self):
-        machine = make_sm()
-        add_map_tasks(machine, [TASK_STATUS_RUNNING])
-
-        with patch.object(machine, "_handle_mapper_ping", new_callable=AsyncMock):
-            await machine.handle_ping("mapper_0", "mapper", "alive")
-
-        assert "handle_ping" in machine.timer.snapshot()
-
-    def test_snapshot_is_always_available(self):
-        """timer.snapshot() returns a dict even with no recorded phases."""
-        machine = make_sm()
-        snap = machine.timer.snapshot()
-        assert isinstance(snap, dict)
-
-
-# ===========================================================================
-# 14. heartbeat_monitor — snapshot_task
+# 12. heartbeat_monitor — snapshot_task
 # ===========================================================================
 
 class TestSnapshotTask:
@@ -1193,28 +1039,6 @@ class TestFastAPIEndpoints:
             "worker_type": "mapper",
             "status":      "alive",
         })
-        assert resp.status_code == 503
-
-        main_module.state_machine = prev_sm
-
-    def test_debug_profile_returns_timings(self, client):
-        resp = client.get("/debug/profile")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "job_id"        in body
-        assert "timings"       in body
-        assert "total_seconds" in body
-        assert isinstance(body["timings"], dict)
-
-    def test_debug_profile_no_state_machine_returns_503(self):
-        from fastapi.testclient import TestClient
-        import main as main_module
-
-        prev_sm           = main_module.state_machine
-        main_module.state_machine = None
-
-        client = TestClient(main_module.app, raise_server_exceptions=False)
-        resp   = client.get("/debug/profile")
         assert resp.status_code == 503
 
         main_module.state_machine = prev_sm

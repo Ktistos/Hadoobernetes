@@ -30,26 +30,11 @@ max_task_retries from job_config).  On Job Master pod restart, in-flight
 tasks whose started_at is known are re-attached timers computed from
   remaining = worker_timeout_seconds - (now - started_at).seconds
   (floored at 5 s to give the pod a grace period to reconnect).
-
-Profiling
-----------
-Set env var PROFILE=1 to enable PhaseTimer output at every phase transition.
-The PhaseTimer instance is exposed as  sm.timer  so main.py's
-  GET /debug/profile
-endpoint can return a live JSON snapshot without touching the orchestration
-logic.
-
-Why PhaseTimer and not cProfile?
-  cProfile measures CPU time per Python function call — useful for CPU-bound
-  code.  The Job Master is I/O-bound: it spends most of its time awaiting DB
-  queries, Kubernetes API calls, and HTTP requests.  PhaseTimer measures
-  wall-clock elapsed time per named operation, which is the right signal here.
 """
 
 import asyncio
 import logging
 import os
-import time
 from datetime import datetime, timezone
 
 import asyncpg
@@ -58,8 +43,6 @@ import httpx
 from worker_spawner import spawn_mapper, spawn_reducer
 
 logger = logging.getLogger(__name__)
-
-PROFILE_ENABLED = os.environ.get("PROFILE", "0") == "1"
 
 # ---------------------------------------------------------------------------
 # Status constants — verbatim from design-doc schema enums (§6)
@@ -80,72 +63,6 @@ TASK_STATUS_FAILED    = "failed"
 
 # Minimum remaining timeout when re-attaching a timer after a restart (seconds)
 MIN_RESTART_TIMEOUT = 5
-
-
-# ---------------------------------------------------------------------------
-# PhaseTimer
-# ---------------------------------------------------------------------------
-
-class PhaseTimer:
-    """
-    Wall-clock timer for named phases of the Job Master lifecycle.
-
-    Unlike cProfile (which measures CPU time per function call), PhaseTimer
-    measures elapsed wall time per named operation.  This is the correct tool
-    for an async service where the hot path is I/O (DB queries, Kubernetes
-    API calls, HTTP pings) rather than CPU work.
-
-    All timings accumulate — calling timer.phase("db_query") multiple times
-    sums the elapsed seconds so you get a total for that category across
-    the full job lifetime.
-
-    Usage:
-        timer = PhaseTimer()
-        with timer.phase("db_connect"):
-            self.db = await asyncpg.connect(...)
-        timer.report(prefix="job-abc")
-
-    Thread/async safety: one instance lives on one JobStateMachine which runs
-    on one asyncio event loop — no concurrent mutation, no locking needed.
-    """
-
-    def __init__(self):
-        self._phases: dict[str, float] = {}
-
-    class _Phase:
-        def __init__(self, timer: "PhaseTimer", name: str):
-            self._timer = timer
-            self._name  = name
-
-        def __enter__(self):
-            self._t0 = time.perf_counter()
-            return self
-
-        def __exit__(self, *_):
-            elapsed = time.perf_counter() - self._t0
-            self._timer._phases[self._name] = (
-                self._timer._phases.get(self._name, 0.0) + elapsed
-            )
-
-    def phase(self, name: str) -> "_Phase":
-        """Return a context manager that times the named phase."""
-        return self._Phase(self, name)
-
-    def snapshot(self) -> dict[str, float]:
-        """Return a copy of accumulated timings, safe to serialise to JSON."""
-        return dict(self._phases)
-
-    def report(self, prefix: str = "") -> None:
-        """Print a formatted timing summary to stdout (pod logs)."""
-        if not self._phases:
-            print(f"[{prefix}] PhaseTimer: no phases recorded yet.")
-            return
-        total = sum(self._phases.values())
-        lines = [f"[{prefix}] Phase timings (total {total:.3f}s):"]
-        for name, elapsed in self._phases.items():
-            pct = (elapsed / total * 100) if total > 0 else 0.0
-            lines.append(f"    {name:<30} {elapsed:8.3f}s  ({pct:5.1f}%)")
-        print("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -189,60 +106,51 @@ class JobStateMachine:
         self.config: dict = {}
         self.lock = asyncio.Lock()
 
-        # PhaseTimer — always created so snapshot() is always safe to call.
-        # Reports are only printed when PROFILE_ENABLED=True.
-        # Exposed publicly so /debug/profile in main.py can read it.
-        self.timer = PhaseTimer()
-
     # -----------------------------------------------------------------------
     # Initialisation
     # -----------------------------------------------------------------------
 
     async def initialize(self):
-        with self.timer.phase("db_connect"):
-            self.db = await asyncpg.connect(os.environ["DATABASE_URL"])
+        self.db = await asyncpg.connect(os.environ["DATABASE_URL"])
 
-        with self.timer.phase("db_fetch_job"):
-            jobs_row = await self.db.fetchrow(
-                """
-                SELECT job_id, user_id, status,
-                       input_data_path, output_data_path,
-                       intermediate_prefix, code_location,
-                       input_file_size_bytes,
-                       completed_mappers_count, completed_reducers_count,
-                       created_at, started_at, completed_at, failure_reason
-                FROM jobs WHERE job_id = $1
-                """,
-                self.job_id,
-            )
+        jobs_row = await self.db.fetchrow(
+            """
+            SELECT job_id, user_id, status,
+                   input_data_path, output_data_path,
+                   intermediate_prefix, code_location,
+                   input_file_size_bytes,
+                   completed_mappers_count, completed_reducers_count,
+                   created_at, started_at, completed_at, failure_reason
+            FROM jobs WHERE job_id = $1
+            """,
+            self.job_id,
+        )
         if jobs_row is None:
             raise RuntimeError(f"Job {self.job_id} not found in DB")
         self.job = dict(jobs_row)
 
-        with self.timer.phase("db_fetch_config"):
-            config_row = await self.db.fetchrow(
-                """
-                SELECT job_id, num_mappers, num_reducers,
-                       default_chunk_size_bytes,
-                       worker_timeout_seconds, max_task_retries
-                FROM job_config WHERE job_id = $1
-                """,
-                self.job_id,
-            )
+        config_row = await self.db.fetchrow(
+            """
+            SELECT job_id, num_mappers, num_reducers,
+                   default_chunk_size_bytes,
+                   worker_timeout_seconds, max_task_retries
+            FROM job_config WHERE job_id = $1
+            """,
+            self.job_id,
+        )
         if config_row is None:
             raise RuntimeError(f"job_config for {self.job_id} not found in DB")
         self.config = dict(config_row)
 
-        with self.timer.phase("db_fetch_map_tasks"):
-            map_rows = await self.db.fetch(
-                """
-                SELECT map_id, status,
-                       byte_offset_start, byte_offset_end,
-                       attempt_number, created_at, started_at, completed_at
-                FROM map_tasks WHERE job_id = $1
-                """,
-                self.job_id,
-            )
+        map_rows = await self.db.fetch(
+            """
+            SELECT map_id, status,
+                   byte_offset_start, byte_offset_end,
+                   attempt_number, created_at, started_at, completed_at
+            FROM map_tasks WHERE job_id = $1
+            """,
+            self.job_id,
+        )
         for row in map_rows:
             t = TaskState(row["map_id"], self.config["worker_timeout_seconds"])
             t.status         = row["status"]
@@ -250,15 +158,14 @@ class JobStateMachine:
             t.started_at     = row["started_at"]
             self.map_tasks[row["map_id"]] = t
 
-        with self.timer.phase("db_fetch_reduce_tasks"):
-            reduce_rows = await self.db.fetch(
-                """
-                SELECT reduce_id, status, output_data_path,
-                       attempt_number, created_at, started_at, completed_at
-                FROM reduce_tasks WHERE job_id = $1
-                """,
-                self.job_id,
-            )
+        reduce_rows = await self.db.fetch(
+            """
+            SELECT reduce_id, status, output_data_path,
+                   attempt_number, created_at, started_at, completed_at
+            FROM reduce_tasks WHERE job_id = $1
+            """,
+            self.job_id,
+        )
         for row in reduce_rows:
             t = TaskState(row["reduce_id"], self.config["worker_timeout_seconds"])
             t.status         = row["status"]
@@ -270,8 +177,6 @@ class JobStateMachine:
             f"[{self.job_id}] Initialized — job.status={self.job['status']}, "
             f"map_tasks={len(self.map_tasks)}, reduce_tasks={len(self.reduce_tasks)}"
         )
-        if PROFILE_ENABLED:
-            self.timer.report(prefix=f"{self.job_id}:initialize")
 
     # -----------------------------------------------------------------------
     # Main entry point
@@ -282,12 +187,10 @@ class JobStateMachine:
         logger.info(f"[{self.job_id}] run() — current job status: {current_status}")
 
         if current_status == JOB_STATUS_PENDING:
-            with self.timer.phase("create_map_tasks"):
-                await self._create_map_tasks()
+            await self._create_map_tasks()
             await self._set_job_status(JOB_STATUS_MAPPING)
-            with self.timer.phase("spawn_mappers"):
-                for map_id in self.map_tasks:
-                    await self._spawn_and_track_mapper(map_id)
+            for map_id in self.map_tasks:
+                await self._spawn_and_track_mapper(map_id)
 
         elif current_status == JOB_STATUS_MAPPING:
             for map_id, task in self.map_tasks.items():
@@ -326,16 +229,15 @@ class JobStateMachine:
         for i in range(num_mappers):
             start = i * chunk_size
             end   = file_size if i == num_mappers - 1 else (i + 1) * chunk_size
-            with self.timer.phase("db_insert_map_task"):
-                await self.db.execute(
-                    """
-                    INSERT INTO map_tasks
-                      (job_id, map_id, status, byte_offset_start, byte_offset_end,
-                       attempt_number, created_at)
-                    VALUES ($1, $2, $3, $4, $5, 0, NOW())
-                    """,
-                    self.job_id, i, TASK_STATUS_PENDING, start, end,
-                )
+            await self.db.execute(
+                """
+                INSERT INTO map_tasks
+                  (job_id, map_id, status, byte_offset_start, byte_offset_end,
+                   attempt_number, created_at)
+                VALUES ($1, $2, $3, $4, $5, 0, NOW())
+                """,
+                self.job_id, i, TASK_STATUS_PENDING, start, end,
+            )
             self.map_tasks[i] = TaskState(i, self.config["worker_timeout_seconds"])
 
         logger.info(
@@ -353,23 +255,20 @@ class JobStateMachine:
         task.status          = TASK_STATUS_RUNNING
         task.started_at      = datetime.now(timezone.utc)
 
-        with self.timer.phase("db_fetch_offsets"):
-            offsets = await self.db.fetchrow(
-                "SELECT byte_offset_start, byte_offset_end FROM map_tasks WHERE job_id=$1 AND map_id=$2",
-                self.job_id, map_id,
-            )
-        with self.timer.phase("db_update_map_task"):
-            await self.db.execute(
-                "UPDATE map_tasks SET status=$1, attempt_number=$2, started_at=NOW() WHERE job_id=$3 AND map_id=$4",
-                TASK_STATUS_RUNNING, task.attempt_number, self.job_id, map_id,
-            )
-        with self.timer.phase("k8s_spawn_mapper"):
-            spawn_mapper(
-                job_id=self.job_id, map_id=map_id, attempt=task.attempt_number,
-                config=self.config, job=self.job,
-                offset_start=offsets["byte_offset_start"],
-                offset_end=offsets["byte_offset_end"],
-            )
+        offsets = await self.db.fetchrow(
+            "SELECT byte_offset_start, byte_offset_end FROM map_tasks WHERE job_id=$1 AND map_id=$2",
+            self.job_id, map_id,
+        )
+        await self.db.execute(
+            "UPDATE map_tasks SET status=$1, attempt_number=$2, started_at=NOW() WHERE job_id=$3 AND map_id=$4",
+            TASK_STATUS_RUNNING, task.attempt_number, self.job_id, map_id,
+        )
+        spawn_mapper(
+            job_id=self.job_id, map_id=map_id, attempt=task.attempt_number,
+            config=self.config, job=self.job,
+            offset_start=offsets["byte_offset_start"],
+            offset_end=offsets["byte_offset_end"],
+        )
 
         self._reset_timer(
             task,
@@ -389,16 +288,14 @@ class JobStateMachine:
 
         output_path = f"{self.job['intermediate_prefix']}output/part_{reduce_id}.json"
 
-        with self.timer.phase("db_update_reduce_task"):
-            await self.db.execute(
-                "UPDATE reduce_tasks SET status=$1, attempt_number=$2, output_data_path=$3, started_at=NOW() WHERE job_id=$4 AND reduce_id=$5",
-                TASK_STATUS_RUNNING, task.attempt_number, output_path, self.job_id, reduce_id,
-            )
-        with self.timer.phase("k8s_spawn_reducer"):
-            spawn_reducer(
-                job_id=self.job_id, reduce_id=reduce_id, attempt=task.attempt_number,
-                config=self.config, job=self.job, output_path=output_path,
-            )
+        await self.db.execute(
+            "UPDATE reduce_tasks SET status=$1, attempt_number=$2, output_data_path=$3, started_at=NOW() WHERE job_id=$4 AND reduce_id=$5",
+            TASK_STATUS_RUNNING, task.attempt_number, output_path, self.job_id, reduce_id,
+        )
+        spawn_reducer(
+            job_id=self.job_id, reduce_id=reduce_id, attempt=task.attempt_number,
+            config=self.config, job=self.job, output_path=output_path,
+        )
 
         self._reset_timer(
             task,
@@ -442,12 +339,11 @@ class JobStateMachine:
 
     async def handle_ping(self, worker_id: str, worker_type: str, status: str):
         task_id = int(worker_id.split("_")[-1])
-        with self.timer.phase("handle_ping"):
-            async with self.lock:
-                if worker_type == "mapper":
-                    await self._handle_mapper_ping(task_id, status)
-                else:
-                    await self._handle_reducer_ping(task_id, status)
+        async with self.lock:
+            if worker_type == "mapper":
+                await self._handle_mapper_ping(task_id, status)
+            else:
+                await self._handle_reducer_ping(task_id, status)
 
     async def _handle_mapper_ping(self, map_id: int, status: str):
         task = self.map_tasks.get(map_id)
@@ -470,15 +366,14 @@ class JobStateMachine:
             if task.timer_handle:
                 task.timer_handle.cancel()
                 task.timer_handle = None
-            with self.timer.phase("db_complete_map_task"):
-                await self.db.execute(
-                    "UPDATE map_tasks SET status=$1, completed_at=NOW() WHERE job_id=$2 AND map_id=$3",
-                    TASK_STATUS_COMPLETED, self.job_id, map_id,
-                )
-                await self.db.execute(
-                    "UPDATE jobs SET completed_mappers_count = completed_mappers_count + 1 WHERE job_id=$1",
-                    self.job_id,
-                )
+            await self.db.execute(
+                "UPDATE map_tasks SET status=$1, completed_at=NOW() WHERE job_id=$2 AND map_id=$3",
+                TASK_STATUS_COMPLETED, self.job_id, map_id,
+            )
+            await self.db.execute(
+                "UPDATE jobs SET completed_mappers_count = completed_mappers_count + 1 WHERE job_id=$1",
+                self.job_id,
+            )
             logger.info(f"[{self.job_id}] mapper_{map_id} completed ✓")
             await self._check_mapping_complete()
 
@@ -503,15 +398,14 @@ class JobStateMachine:
             if task.timer_handle:
                 task.timer_handle.cancel()
                 task.timer_handle = None
-            with self.timer.phase("db_complete_reduce_task"):
-                await self.db.execute(
-                    "UPDATE reduce_tasks SET status=$1, completed_at=NOW() WHERE job_id=$2 AND reduce_id=$3",
-                    TASK_STATUS_COMPLETED, self.job_id, reduce_id,
-                )
-                await self.db.execute(
-                    "UPDATE jobs SET completed_reducers_count = completed_reducers_count + 1 WHERE job_id=$1",
-                    self.job_id,
-                )
+            await self.db.execute(
+                "UPDATE reduce_tasks SET status=$1, completed_at=NOW() WHERE job_id=$2 AND reduce_id=$3",
+                TASK_STATUS_COMPLETED, self.job_id, reduce_id,
+            )
+            await self.db.execute(
+                "UPDATE jobs SET completed_reducers_count = completed_reducers_count + 1 WHERE job_id=$1",
+                self.job_id,
+            )
             logger.info(f"[{self.job_id}] reducer_{reduce_id} completed ✓")
             await self._check_reducing_complete()
 
@@ -530,11 +424,10 @@ class JobStateMachine:
             )
             if task.attempt_number >= self.config["max_task_retries"]:
                 task.status = TASK_STATUS_FAILED
-                with self.timer.phase("db_fail_map_task"):
-                    await self.db.execute(
-                        "UPDATE map_tasks SET status=$1 WHERE job_id=$2 AND map_id=$3",
-                        TASK_STATUS_FAILED, self.job_id, map_id,
-                    )
+                await self.db.execute(
+                    "UPDATE map_tasks SET status=$1 WHERE job_id=$2 AND map_id=$3",
+                    TASK_STATUS_FAILED, self.job_id, map_id,
+                )
                 await self._fail_job(
                     f"map_task {map_id} exceeded max_task_retries ({self.config['max_task_retries']})"
                 )
@@ -552,11 +445,10 @@ class JobStateMachine:
             )
             if task.attempt_number >= self.config["max_task_retries"]:
                 task.status = TASK_STATUS_FAILED
-                with self.timer.phase("db_fail_reduce_task"):
-                    await self.db.execute(
-                        "UPDATE reduce_tasks SET status=$1 WHERE job_id=$2 AND reduce_id=$3",
-                        TASK_STATUS_FAILED, self.job_id, reduce_id,
-                    )
+                await self.db.execute(
+                    "UPDATE reduce_tasks SET status=$1 WHERE job_id=$2 AND reduce_id=$3",
+                    TASK_STATUS_FAILED, self.job_id, reduce_id,
+                )
                 await self._fail_job(
                     f"reduce_task {reduce_id} exceeded max_task_retries ({self.config['max_task_retries']})"
                 )
@@ -577,23 +469,18 @@ class JobStateMachine:
 
         for i in range(self.config["num_reducers"]):
             output_path = f"{self.job['intermediate_prefix']}output/part_{i}.json"
-            with self.timer.phase("db_insert_reduce_task"):
-                await self.db.execute(
-                    """
-                    INSERT INTO reduce_tasks
-                      (job_id, reduce_id, status, output_data_path, attempt_number, created_at)
-                    VALUES ($1, $2, $3, $4, 0, NOW())
-                    """,
-                    self.job_id, i, TASK_STATUS_PENDING, output_path,
-                )
+            await self.db.execute(
+                """
+                INSERT INTO reduce_tasks
+                  (job_id, reduce_id, status, output_data_path, attempt_number, created_at)
+                VALUES ($1, $2, $3, $4, 0, NOW())
+                """,
+                self.job_id, i, TASK_STATUS_PENDING, output_path,
+            )
             self.reduce_tasks[i] = TaskState(i, self.config["worker_timeout_seconds"])
 
-        if PROFILE_ENABLED:
-            self.timer.report(prefix=f"{self.job_id}:mapping_complete")
-
-        with self.timer.phase("spawn_reducers"):
-            for reduce_id in self.reduce_tasks:
-                await self._spawn_and_track_reducer(reduce_id)
+        for reduce_id in self.reduce_tasks:
+            await self._spawn_and_track_reducer(reduce_id)
 
     async def _check_reducing_complete(self):
         completed_count = sum(1 for t in self.reduce_tasks.values() if t.status == TASK_STATUS_COMPLETED)
@@ -603,9 +490,6 @@ class JobStateMachine:
         logger.info(f"[{self.job_id}] All {self.config['num_reducers']} reducers done. Job complete.")
         await self._set_job_status(JOB_STATUS_COMPLETED)
 
-        if PROFILE_ENABLED:
-            self.timer.report(prefix=f"{self.job_id}:job_complete")
-
         await self._notify_cluster_manager(JOB_STATUS_COMPLETED)
 
     # -----------------------------------------------------------------------
@@ -614,46 +498,39 @@ class JobStateMachine:
 
     async def _set_job_status(self, status: str):
         if status == JOB_STATUS_MAPPING:
-            with self.timer.phase("db_set_status"):
-                await self.db.execute(
-                    "UPDATE jobs SET status=$1, started_at=NOW() WHERE job_id=$2",
-                    status, self.job_id,
-                )
+            await self.db.execute(
+                "UPDATE jobs SET status=$1, started_at=NOW() WHERE job_id=$2",
+                status, self.job_id,
+            )
         elif status in (JOB_STATUS_COMPLETED, JOB_STATUS_FAILED):
-            with self.timer.phase("db_set_status"):
-                await self.db.execute(
-                    "UPDATE jobs SET status=$1, completed_at=NOW() WHERE job_id=$2",
-                    status, self.job_id,
-                )
+            await self.db.execute(
+                "UPDATE jobs SET status=$1, completed_at=NOW() WHERE job_id=$2",
+                status, self.job_id,
+            )
         else:
-            with self.timer.phase("db_set_status"):
-                await self.db.execute(
-                    "UPDATE jobs SET status=$1 WHERE job_id=$2",
-                    status, self.job_id,
-                )
+            await self.db.execute(
+                "UPDATE jobs SET status=$1 WHERE job_id=$2",
+                status, self.job_id,
+            )
         logger.info(f"[{self.job_id}] jobs.status → {status}")
 
     async def _fail_job(self, reason: str):
         logger.error(f"[{self.job_id}] Job FAILED: {reason}")
-        with self.timer.phase("db_set_status"):
-            await self.db.execute(
-                "UPDATE jobs SET status=$1, failure_reason=$2, completed_at=NOW() WHERE job_id=$3",
-                JOB_STATUS_FAILED, reason, self.job_id,
-            )
-        if PROFILE_ENABLED:
-            self.timer.report(prefix=f"{self.job_id}:job_failed")
+        await self.db.execute(
+            "UPDATE jobs SET status=$1, failure_reason=$2, completed_at=NOW() WHERE job_id=$3",
+            JOB_STATUS_FAILED, reason, self.job_id,
+        )
         await self._notify_cluster_manager(JOB_STATUS_FAILED)
 
     async def _notify_cluster_manager(self, status: str):
         url     = os.environ["CLUSTER_MANAGER_URL"]
         payload = {"job_id": self.job_id, "status": status}
-        with self.timer.phase("notify_cluster_manager"):
-            async with httpx.AsyncClient() as client:
-                try:
-                    resp = await client.post(f"{url}/update_job_state", json=payload, timeout=10)
-                    resp.raise_for_status()
-                    logger.info(f"[{self.job_id}] Notified Cluster Manager: status={status}")
-                except Exception as exc:
-                    logger.error(
-                        f"[{self.job_id}] Failed to notify Cluster Manager (status={status}): {exc}"
-                    )
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(f"{url}/update_job_state", json=payload, timeout=10)
+                resp.raise_for_status()
+                logger.info(f"[{self.job_id}] Notified Cluster Manager: status={status}")
+            except Exception as exc:
+                logger.error(
+                    f"[{self.job_id}] Failed to notify Cluster Manager (status={status}): {exc}"
+                )
