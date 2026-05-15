@@ -91,7 +91,7 @@ def test_get_job_status_found(monkeypatch):
     async def mock_get(*args): 
         return mock_record
 
-    monkeypatch.setattr(db, "get_job_status", mock_get)
+    monkeypatch.setattr(db, "get_job_status_for_user", mock_get)
     
     response = client.get(f"/job_status/{mock_uuid}")
     assert response.status_code == 200
@@ -101,7 +101,7 @@ def test_get_job_status_not_found(monkeypatch):
     async def mock_get(*args): 
         return None
 
-    monkeypatch.setattr(db, "get_job_status", mock_get)
+    monkeypatch.setattr(db, "get_job_status_for_user", mock_get)
     response = client.get(f"/job_status/{uuid4()}")
     assert response.status_code == 404
 
@@ -111,10 +111,32 @@ def test_abort_job(monkeypatch):
     async def mock_get(*args): return {"status": "pending"}
     async def mock_update(*args): return None
     
-    monkeypatch.setattr(db, "get_job_status", mock_get)
+    monkeypatch.setattr(db, "get_job_status_for_user", mock_get)
     monkeypatch.setattr(db, "update_job_status", mock_update)
     monkeypatch.setattr(k8s, "terminate_job_pods", lambda jid: None)
     
     response = client.post(f"/abort_job/{mock_uuid}")
     assert response.status_code == 200
     assert "aborted successfully" in response.json()["message"]
+
+def test_get_job_status_scopes_lookup_to_authenticated_user(monkeypatch):
+    mock_uuid = uuid4()
+    captured = {}
+
+    async def mock_get(job_id, user_id):
+        captured["job_id"] = job_id
+        captured["user_id"] = user_id
+        return {
+            "job_id": job_id,
+            "status": "running",
+            "completed_mappers_count": 0,
+            "completed_reducers_count": 0,
+            "created_at": "2024-01-01T00:00:00Z",
+        }
+
+    monkeypatch.setattr(db, "get_job_status_for_user", mock_get)
+
+    response = client.get(f"/job_status/{mock_uuid}")
+
+    assert response.status_code == 200
+    assert captured == {"job_id": mock_uuid, "user_id": "mock-user-id"}

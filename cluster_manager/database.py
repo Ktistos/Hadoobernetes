@@ -93,6 +93,25 @@ async def get_job_status(job_id: UUID) -> dict | None:
         """, job_id)
         return dict(record) if record else None
 
+async def get_job_status_for_user(job_id: UUID, user_id: str) -> dict | None:
+    """
+    Retrieves a job's status only if it belongs to the given authenticated user.
+
+    Args:
+        job_id (UUID): The unique identifier of the job to query.
+        user_id (str): The authenticated user's subject identifier.
+
+    Returns:
+        dict | None: The job status record when owned by the user, otherwise None.
+    """
+    async with _pool.acquire() as conn:
+        record = await conn.fetchrow("""
+            SELECT job_id, status, completed_mappers_count, completed_reducers_count, created_at, started_at, completed_at
+            FROM mapreduce.jobs
+            WHERE job_id = $1 AND user_id = $2
+        """, job_id, user_id)
+        return dict(record) if record else None
+
 async def update_job_status(job_id: UUID, status: str):
     """
     Updates the global status enum for a specific job.

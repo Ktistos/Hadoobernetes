@@ -101,7 +101,7 @@ async def get_job_status(job_id: UUID, user_id: str = Depends(get_current_user))
     Retrieves the real-time execution status and completion metrics for a specific job.
     Requires the user to pass a valid authentication token.
     """
-    status_record = await db.get_job_status(job_id)
+    status_record = await db.get_job_status_for_user(job_id, user_id)
     if not status_record:
         raise HTTPException(status_code=404, detail="Job not found")
     return status_record
@@ -113,7 +113,7 @@ async def abort_job(job_id: UUID, user_id: str = Depends(get_current_user)):
     Updates the database status to aborted, deletes all associated Kubernetes pods,
     and initiates the cleanup of intermediate storage files.
     """
-    status_record = await db.get_job_status(job_id)
+    status_record = await db.get_job_status_for_user(job_id, user_id)
     if not status_record:
         raise HTTPException(status_code=404, detail="Job not found")
         

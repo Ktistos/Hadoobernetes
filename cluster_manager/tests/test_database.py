@@ -57,3 +57,17 @@ def test_get_job_status(mock_pool):
     
     result = asyncio.run(db.get_job_status(mock_uuid))
     assert result["status"] == "running"
+
+def test_get_job_status_for_user(mock_pool):
+    _, conn = mock_pool
+    mock_uuid = uuid4()
+
+    conn.fetchrow.return_value = {"job_id": mock_uuid, "status": "running"}
+
+    result = asyncio.run(db.get_job_status_for_user(mock_uuid, "user-123"))
+    assert result["status"] == "running"
+
+    query_args = conn.fetchrow.call_args[0]
+    assert "WHERE job_id = $1 AND user_id = $2" in query_args[0]
+    assert query_args[1] == mock_uuid
+    assert query_args[2] == "user-123"
