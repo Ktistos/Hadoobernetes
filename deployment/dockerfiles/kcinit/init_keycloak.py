@@ -8,6 +8,7 @@ ADMIN_PASSWORD = os.environ["KC_BOOTSTRAP_ADMIN_PASSWORD"]
 
 REALM = "hadoobernetes"
 CLIENT_ID = "mapreduce-client"
+ADMIN_ROLE = "mapreduce-admin"
 TEST_USER = {
     "username": "testuser",
     "email": "testuser@hadoobernetes.local",
@@ -56,6 +57,19 @@ def main():
         print("  Already exists, skipping.")
     print("  Done.")
 
+    client_uuid = admin.get_client_id(CLIENT_ID)
+    if client_uuid is None:
+        raise RuntimeError(f"Client '{CLIENT_ID}' not found after initialization")
+
+    print(f"Creating client role '{ADMIN_ROLE}'...")
+    admin.create_client_role(
+        client_uuid,
+        payload={"name": ADMIN_ROLE},
+        skip_exists=True,
+    )
+    admin_role = admin.get_client_role(client_uuid, ADMIN_ROLE)
+    print("  Done.")
+
     # Create user if it doesn't exist
     print(f"Creating user '{TEST_USER['username']}'...")
     existing_users = [u["username"] for u in admin.get_users()]
@@ -79,6 +93,16 @@ def main():
         user_id = admin.get_user_id(TEST_USER["username"])
         print("  Already exists, skipping.")
     print(f"  Done. (id: {user_id})")
+
+    print(f"Assigning client role '{ADMIN_ROLE}' to '{TEST_USER['username']}'...")
+    existing_role_names = {
+        role["name"] for role in admin.get_client_roles_of_user(user_id, client_uuid)
+    }
+    if ADMIN_ROLE not in existing_role_names:
+        admin.assign_client_role(user_id, client_uuid, admin_role)
+    else:
+        print("  Already assigned, skipping.")
+    print("  Done.")
 
     print("\nKeycloak initialized successfully.")
 

@@ -5,6 +5,7 @@ import json
 KEYCLOAK_URL = "http://kc.minikube.local"
 REALM = "hadoobernetes"
 CLIENT_ID = "mapreduce-client"
+ADMIN_ROLE = "mapreduce-admin"
 USERNAME = "testuser"
 PASSWORD = "test"
 
@@ -43,6 +44,10 @@ def main():
     print(f"   policy    : {claims.get('policy', '(not set)')}")
     assert claims.get("azp") == CLIENT_ID, f"Expected client_id '{CLIENT_ID}', got '{claims.get('azp')}'"
     print(f"   client_id matches '{CLIENT_ID}' ✓")
+    client_roles = claims.get("resource_access", {}).get(CLIENT_ID, {}).get("roles", [])
+    print(f"   client roles: {client_roles}")
+    assert ADMIN_ROLE in client_roles, f"Expected client role '{ADMIN_ROLE}' in token, got {client_roles}"
+    print(f"   client role '{ADMIN_ROLE}' present ✓")
 
     # 4. Token refresh
     print("\n4. Refreshing token...")

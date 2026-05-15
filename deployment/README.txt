@@ -21,7 +21,8 @@ deployment/
 |   |-- kcinit/               Image: ktistos/kcinit:latest
 |       |-- Dockerfile        Python 3.12 slim image. Runs init_keycloak.py on start.
 |       |-- init_keycloak.py  Creates the hadoobernetes realm, mapreduce-client,
-|                             and testuser in Keycloak via the admin API.
+|                             mapreduce-admin client role, and testuser in
+|                             Keycloak via the admin API.
 |
 |-- k8s_resources/            All Kubernetes manifests. Applied recursively with:
 |   |                           kubectl apply -f ./k8s_resources/ -R
@@ -151,7 +152,8 @@ What each test verifies:
                   keycloak schemas, all expected tables, and enums exist.
 
   test_keycloak   Logs in as testuser, validates the token via userinfo,
-                  decodes claims, and verifies token refresh.
+                  decodes claims (including the mapreduce-admin client role),
+                  and verifies token refresh.
 
   test_minio      Checks bucket and placeholder initialization, verifies
                   anonymous access is denied, creates a scoped user derived
@@ -184,7 +186,8 @@ need to rebuild and push them if you change their contents.
   on container start. The script connects to Keycloak through KEYCLOAK_URL
   (the init job sets this to the in-cluster http://keycloak:8080 service)
   with the bootstrap admin credentials (injected via secrets) and creates the
-  hadoobernetes realm, the mapreduce-client, and the testuser account.
+  hadoobernetes realm, the mapreduce-client, the mapreduce-admin client role,
+  and the testuser account with that role assigned.
 
   Rebuild and push:
     cd deployment/dockerfiles/kcinit
