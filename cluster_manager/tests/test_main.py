@@ -3,12 +3,13 @@ from fastapi.testclient import TestClient
 from uuid import uuid4
 import main
 from main import app
-from security import get_current_user
+from security import get_current_user, require_admin
 import database as db
 import k8s_client as k8s
 
 # Override the security dependency for route testing
 app.dependency_overrides[get_current_user] = lambda: "mock-user-id"
+app.dependency_overrides[require_admin] = lambda: "mock-admin-id"
 client = TestClient(app)
 
 def test_readiness_liveliness(monkeypatch):
@@ -140,3 +141,37 @@ def test_get_job_status_scopes_lookup_to_authenticated_user(monkeypatch):
 
     assert response.status_code == 200
     assert captured == {"job_id": mock_uuid, "user_id": "mock-user-id"}
+
+def test_get_all_jobs_scopes_lookup_to_authenticated_user(monkeypatch):
+    captured = {}
+
+    async def mock_get(user_id):
+        captured["user_id"] = user_id
+        return [{"job_id": "job-1", "user_id": user_id}]
+
+    monkeypatch.setattr(db, "get_jobs_for_user", mock_get)
+
+    response = client.get("/get_all_jobs")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "jobs": [{"job_id": "job-1", "user_id": "mock-user-id"}]
+    }
+    assert captured == {"user_id": "mock-user-id"}
+
+def test_admin_jobs_uses_admin_scoped_listing(monkeypatch):
+    captured = {"called": False}
+
+    async def mock_get():
+        captured["called"] = True
+        return [{"job_id": "job-1", "user_id": "someone-else"}]
+
+    monkeypatch.setattr(db, "get_all_jobs", mock_get)
+
+    response = client.get("/admin/jobs")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "jobs": [{"job_id": "job-1", "user_id": "someone-else"}]
+    }
+    assert captured["called"] is True

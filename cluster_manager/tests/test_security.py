@@ -54,3 +54,38 @@ def test_get_current_user():
         asyncio.run(security.get_current_user({"email": "test@test.com"}))
         
     assert exc.value.status_code == 401
+
+def test_require_admin_accepts_realm_role(monkeypatch):
+    monkeypatch.setattr(security, "ADMIN_ROLES", {"admin", "mapreduce-admin"})
+
+    user_id = asyncio.run(
+        security.require_admin({"sub": "user-123", "realm_access": {"roles": ["admin"]}})
+    )
+
+    assert user_id == "user-123"
+
+def test_require_admin_accepts_client_role(monkeypatch):
+    monkeypatch.setattr(security, "ADMIN_ROLES", {"admin", "mapreduce-admin"})
+
+    user_id = asyncio.run(
+        security.require_admin(
+            {
+                "sub": "user-123",
+                "resource_access": {"mapreduce-client": {"roles": ["mapreduce-admin"]}},
+            }
+        )
+    )
+
+    assert user_id == "user-123"
+
+def test_require_admin_rejects_non_admin(monkeypatch):
+    monkeypatch.setattr(security, "ADMIN_ROLES", {"admin", "mapreduce-admin"})
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            security.require_admin(
+                {"sub": "user-123", "realm_access": {"roles": ["user"]}}
+            )
+        )
+
+    assert exc.value.status_code == 403

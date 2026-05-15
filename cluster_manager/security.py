@@ -18,6 +18,11 @@ security = HTTPBearer()
 KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "http://kc.minikube.local")
 REALM = os.getenv("KEYCLOAK_REALM", "hadoobernetes")
 CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID", "mapreduce-client")
+ADMIN_ROLES = {
+    role.strip()
+    for role in os.getenv("ADMIN_ROLES", "admin,mapreduce-admin").split(",")
+    if role.strip()
+}
 
 _public_key: RSAPublicKey | None = None
 
@@ -97,3 +102,27 @@ async def get_current_user(token_payload: dict = Security(verify_token)) -> str:
     if not user_id:
         raise HTTPException(status_code=401, detail="Subject (sub) not found in token")
     return user_id
+
+def _token_roles(token_payload: dict) -> set[str]:
+    roles = set(token_payload.get("realm_access", {}).get("roles", []))
+    client_roles = (
+        token_payload.get("resource_access", {})
+        .get(CLIENT_ID, {})
+        .get("roles", [])
+    )
+    roles.update(client_roles)
+    return roles
+
+async def require_admin(token_payload: dict = Security(verify_token)) -> str:
+    """
+    FastAPI dependency that allows access only to tokens carrying one of the
+    accepted admin roles.
+    """
+    user_id = token_payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Subject (sub) not found in token")
+
+    if _token_roles(token_payload) & ADMIN_ROLES:
+        return user_id
+
+    raise HTTPException(status_code=403, detail="Admin access required")

@@ -23,6 +23,7 @@ def mock_pool(monkeypatch):
     # 3. Explicitly define awaited methods on the connection as AsyncMocks
     conn.execute = AsyncMock()
     conn.fetchrow = AsyncMock()
+    conn.fetch = AsyncMock()
     
     monkeypatch.setattr(db, "_pool", pool)
     return pool, conn
@@ -71,3 +72,34 @@ def test_get_job_status_for_user(mock_pool):
     assert "WHERE job_id = $1 AND user_id = $2" in query_args[0]
     assert query_args[1] == mock_uuid
     assert query_args[2] == "user-123"
+
+def test_get_jobs_for_user(mock_pool):
+    _, conn = mock_pool
+
+    conn.fetch.return_value = [
+        {"job_id": uuid4(), "user_id": "user-123", "status": "running"},
+        {"job_id": uuid4(), "user_id": "user-123", "status": "completed"},
+    ]
+
+    result = asyncio.run(db.get_jobs_for_user("user-123"))
+    assert len(result) == 2
+    assert all(job["user_id"] == "user-123" for job in result)
+
+    query_args = conn.fetch.call_args[0]
+    assert "WHERE user_id = $1" in query_args[0]
+    assert "ORDER BY created_at DESC" in query_args[0]
+    assert query_args[1] == "user-123"
+
+def test_get_all_jobs(mock_pool):
+    _, conn = mock_pool
+
+    conn.fetch.return_value = [
+        {"job_id": uuid4(), "user_id": "user-123", "status": "running"},
+        {"job_id": uuid4(), "user_id": "user-456", "status": "completed"},
+    ]
+
+    result = asyncio.run(db.get_all_jobs())
+    assert len(result) == 2
+
+    query_args = conn.fetch.call_args[0]
+    assert query_args[0] == "SELECT * FROM mapreduce.jobs ORDER BY created_at DESC"

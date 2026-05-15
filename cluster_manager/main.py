@@ -13,7 +13,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from schemas import JobSubmissionRequest, JobSubmissionResponse, JobStatusResponse, UpdateJobStateRequest
-from security import get_current_user
+from security import get_current_user, require_admin
 import database as db
 import k8s_client as k8s
 
@@ -125,7 +125,15 @@ async def abort_job(job_id: UUID, user_id: str = Depends(get_current_user)):
 @app.get("/get_all_jobs")
 async def get_all_jobs(user_id: str = Depends(get_current_user)):
     """
-    Admin endpoint to fetch the state of all jobs across the entire cluster.
+    Fetch all jobs that belong to the authenticated user.
+    """
+    jobs = await db.get_jobs_for_user(user_id)
+    return {"jobs": jobs}
+
+@app.get("/admin/jobs")
+async def get_all_jobs_admin(admin_user_id: str = Depends(require_admin)):
+    """
+    Fetch the state of all jobs across the entire cluster for admin callers.
     """
     jobs = await db.get_all_jobs()
     return {"jobs": jobs}

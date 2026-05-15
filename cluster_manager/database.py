@@ -123,13 +123,30 @@ async def update_job_status(job_id: UUID, status: str):
     async with _pool.acquire() as conn:
         await conn.execute("UPDATE mapreduce.jobs SET status = $1::mapreduce.job_status WHERE job_id = $2", status, job_id)
 
+async def get_jobs_for_user(user_id: str) -> list[dict]:
+    """
+    Retrieves all jobs owned by the given authenticated user.
+
+    Args:
+        user_id (str): The authenticated user's subject identifier.
+
+    Returns:
+        list[dict]: The jobs that belong to the user.
+    """
+    async with _pool.acquire() as conn:
+        records = await conn.fetch(
+            "SELECT * FROM mapreduce.jobs WHERE user_id = $1 ORDER BY created_at DESC",
+            user_id,
+        )
+        return [dict(r) for r in records]
+
 async def get_all_jobs() -> list[dict]:
     """
     Retrieves the complete state records for all jobs in the cluster.
-    
+
     Returns:
-        list[dict]: A list containing the metadata dictionaries for every job in the database.
+        list[dict]: A list containing the metadata dictionaries for every job.
     """
     async with _pool.acquire() as conn:
-        records = await conn.fetch("SELECT * FROM mapreduce.jobs")
+        records = await conn.fetch("SELECT * FROM mapreduce.jobs ORDER BY created_at DESC")
         return [dict(r) for r in records]
