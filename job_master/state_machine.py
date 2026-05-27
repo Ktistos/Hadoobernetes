@@ -533,7 +533,7 @@ class JobStateMachine:
         payload = {"job_id": self.job_id, "status": status}
         async with httpx.AsyncClient() as client:
             try:
-                resp = await client.post(f"{url}/update_job_state", json=payload, timeout=10)
+                resp = await client.post(f"{url}/update_job_state/{self.job_id}", json=payload, timeout=10)
                 resp.raise_for_status()
                 logger.info(f"[{self.job_id}] Notified Cluster Manager: status={status}")
             except Exception as exc:

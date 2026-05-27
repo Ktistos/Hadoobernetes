@@ -38,7 +38,7 @@ def spawn_job_master(job_id: UUID):
     container = client.V1Container(
         name="job-master",
         image="hadoobernetes/job-master:latest",
-        image_pull_policy="Always",
+        image_pull_policy="Never", # Use local image for development; change to "IfNotPresent" or "Always" for production
         ports=[
             client.V1ContainerPort(container_port=8000),
         ],
@@ -57,18 +57,40 @@ def spawn_job_master(job_id: UUID):
             failure_threshold=3,
         ),
         env=[
+            client.V1EnvVar(name="K8S_NAMESPACE", value="mapreduce"),
             client.V1EnvVar(name="JOB_ID", value=str(job_id)),
             client.V1EnvVar(name="POSTGRES_HOST", value=os.getenv("POSTGRES_HOST", "postgres")),
-            client.V1EnvVar(name="POSTGRES_PORT", value=os.getenv("POSTGRES_PORT", os.getenv("DB_PORT", "5432"))),
+            # client.V1EnvVar(name="POSTGRES_PORT", value=os.getenv("POSTGRES_PORT", os.getenv("DB_PORT", "5432"))),
+            client.V1EnvVar(name="POSTGRES_PORT", value="5432"),
             client.V1EnvVar(name="POSTGRES_USER", value=os.getenv("POSTGRES_USER", "admin")),
             client.V1EnvVar(name="POSTGRES_PASSWORD", value=os.getenv("POSTGRES_PASSWORD", "admin")),
             client.V1EnvVar(name="POSTGRES_DB", value=os.getenv("POSTGRES_DB", "mapreduce")),
+            client.V1EnvVar(name="CLUSTER_MANAGER_URL", value="http://cluster-manager:8000"),
+            # client.V1EnvVar(name="MINIO_ENDPOINT", value="minio:80"),
+            client.V1EnvVar(name="MINIO_ENDPOINT", value="minio.minio-tenant.svc.cluster.local:80"),
+            client.V1EnvVar(name="MINIO_ACCESS_KEY", value="minioadmin"),
+            client.V1EnvVar(name="MINIO_SECRET_KEY", value="minioadmin"),
+            client.V1EnvVar(name="MINIO_BUCKET", value="mapreduce"),
+            client.V1EnvVar(
+                name="POD_IP",
+                value_from=client.V1EnvVarSource(
+                    field_ref=client.V1ObjectFieldSelector(field_path="status.podIP")
+                )
+            )
         ]
     )
 
+    # template = client.V1PodTemplateSpec(
+    #     metadata=client.V1ObjectMeta(labels={"app": "job-master", "job_id": str(job_id)}),
+    #     spec=client.V1PodSpec(restart_policy="Never", containers=[container])
+    # )
     template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels={"app": "job-master", "job_id": str(job_id)}),
-        spec=client.V1PodSpec(restart_policy="Never", containers=[container])
+        spec=client.V1PodSpec(
+            restart_policy="Never", 
+            service_account_name="mapreduce-sa",
+            containers=[container]
+        )
     )
 
     job_spec = client.V1JobSpec(

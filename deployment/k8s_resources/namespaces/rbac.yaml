@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mapreduce-sa
+  namespace: mapreduce
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mapreduce-role
+  namespace: mapreduce
+rules:
+- apiGroups: ["batch", ""]
+  resources: ["jobs", "pods"]
+  verbs: ["create", "delete", "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mapreduce-rolebinding
+  namespace: mapreduce
+subjects:
+- kind: ServiceAccount
+  name: mapreduce-sa
+  namespace: mapreduce
+roleRef:
+  kind: Role
+  name: mapreduce-role
+  apiGroup: rbac.authorization.k8s.io

@@ -75,21 +75,44 @@ def submit(mappers, reducers, input_file, code):
         # Here we'll use a generic staging prefix for simplicity.
         staging_prefix = "users/staged_inputs"
         
+        # click.echo("[*] Uploading input data to MinIO...")
+        # input_data_path = storage.upload_file(input_file, f"{staging_prefix}/data")
+        # click.echo(f"  -> {input_data_path}")
+        
+        # click.echo("[*] Uploading executable code to MinIO...")
+        # code_location = storage.upload_file(code, f"{staging_prefix}/code")
+        # click.echo(f"  -> {code_location}")
+        
+        # # Calculate file size for chunking
+        # input_file_size_bytes = os.path.getsize(input_file)
+        
+        # # Define where the system should put the final merged results
+        # output_data_path = f"minio://mapreduce/{staging_prefix}/outputs/"
+        
+        # # Build the payload
+        # payload = {
+        #     "num_mappers": mappers,
+        #     "num_reducers": reducers,
+        #     "input_data_path": input_data_path,
+        #     "output_data_path": output_data_path,
+        #     "code_location": code_location,
+        #     "input_file_size_bytes": input_file_size_bytes
+        # }
+        
         click.echo("[*] Uploading input data to MinIO...")
-        input_data_path = storage.upload_file(input_file, f"{staging_prefix}/data")
-        click.echo(f"  -> {input_data_path}")
+        raw_input_data_path = storage.upload_file(input_file, f"{staging_prefix}/data")
+        click.echo(f"  -> {raw_input_data_path}")
         
         click.echo("[*] Uploading executable code to MinIO...")
-        code_location = storage.upload_file(code, f"{staging_prefix}/code")
-        click.echo(f"  -> {code_location}")
+        raw_code_location = storage.upload_file(code, f"{staging_prefix}/code")
+        click.echo(f"  -> {raw_code_location}")
         
-        # Calculate file size for chunking
         input_file_size_bytes = os.path.getsize(input_file)
         
-        # Define where the system should put the final merged results
-        output_data_path = f"minio://mapreduce/{staging_prefix}/outputs/"
+        input_data_path = raw_input_data_path.replace(f"minio://{storage.BUCKET}/", "")
+        code_location = raw_code_location.replace(f"minio://{storage.BUCKET}/", "")
+        output_data_path = f"{staging_prefix}/outputs/"
         
-        # Build the payload
         payload = {
             "num_mappers": mappers,
             "num_reducers": reducers,
@@ -98,7 +121,7 @@ def submit(mappers, reducers, input_file, code):
             "code_location": code_location,
             "input_file_size_bytes": input_file_size_bytes
         }
-        
+
         click.echo("[*] Submitting job to Cluster Manager...")
         response = api_client.submit_job(payload)
         

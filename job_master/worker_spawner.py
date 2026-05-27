@@ -128,6 +128,7 @@ def _create_k8s_job(
                         k8s_client.V1Container(
                             name    = "worker",
                             image   = _WORKER_IMAGE,
+                            image_pull_policy="Never",
                             command = command,
                             env     = env_vars,
                             # Resource requests — tune for your cluster

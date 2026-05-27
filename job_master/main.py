@@ -46,19 +46,19 @@ _ready = False
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global state_machine, _ready
-
     job_id = os.environ["JOB_ID"]
+    
+    if "JOB_MASTER_SERVICE_URL" not in os.environ:
+        pod_ip = os.environ.get("POD_IP", "127.0.0.1")
+        os.environ["JOB_MASTER_SERVICE_URL"] = f"http://{pod_ip}:8000"
+        
     logger.info(f"Job Master starting for job_id={job_id}")
-
     state_machine = JobStateMachine(job_id)
     await state_machine.initialize()
     asyncio.create_task(state_machine.run())
-
     _ready = True
     logger.info(f"Job Master ready for job_id={job_id}")
-
     yield
-
     if state_machine and state_machine.db:
         await state_machine.db.close()
         logger.info("DB connection closed.")
