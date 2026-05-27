@@ -44,6 +44,7 @@ import asyncio
 import httpx
 import orjson
 from minio import Minio
+from minio.error import S3Error
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
@@ -165,12 +166,18 @@ def _iter_owned_line_batches(object_path: str):
     while True:
         request_offset = cursor
         request_length = READ_BLOCK_SIZE
-
         if first_request and OFFSET_START > 0:
             request_offset -= 1
             request_length += 1
-
-        payload = _read_input_range(object_path, request_offset, request_length)
+        try:
+            payload = _read_input_range(object_path, request_offset, request_length)
+        except S3Error as exc:
+            if exc.code == "InvalidRange":
+                # We've read past EOF — flush any carry and exit cleanly
+                if carry and not skipping_partial_line and carry_start < OFFSET_END:
+                    yield [(carry_start, carry)]
+                return
+            raise
         include_previous_byte = first_request and OFFSET_START > 0
         first_request = False
 

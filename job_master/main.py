@@ -95,7 +95,7 @@ async def worker_ping(req: WorkerPingRequest):
         raise HTTPException(status_code=503, detail="State machine not initialised")
     if req.worker_type not in ("mapper", "reducer"):
         raise HTTPException(status_code=400, detail=f"Unknown worker_type: {req.worker_type}")
-    if req.status not in ("started", "alive", "completed"):
+    if req.status not in ("started", "alive", "completed", "failed"): #temporarily add "failed" status for better error handling
         raise HTTPException(status_code=400, detail=f"Unknown status: {req.status}")
 
     await state_machine.handle_ping(req.worker_id, req.worker_type, req.status)

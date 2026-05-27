@@ -382,6 +382,22 @@ class JobStateMachine:
             )
             logger.info(f"[{self.job_id}] mapper_{map_id} completed ✓")
             await self._check_mapping_complete()
+        elif status == "failed":
+            if task.timer_handle:
+                task.timer_handle.cancel()
+                task.timer_handle = None
+            logger.warning(f"[{self.job_id}] mapper_{map_id} reported failure (attempt={task.attempt_number})")
+            if task.attempt_number >= self.config["max_task_retries"]:
+                task.status = TASK_STATUS_FAILED
+                await self.db.execute(
+                    "UPDATE map_tasks SET status=$1 WHERE job_id=$2 AND map_id=$3",
+                    TASK_STATUS_FAILED, self.job_id, map_id,
+                )
+                await self._fail_job(
+                    f"map_task {map_id} exceeded max_task_retries ({self.config['max_task_retries']})"
+                )
+                return
+            await self._spawn_and_track_mapper(map_id)
 
     async def _handle_reducer_ping(self, reduce_id: int, status: str):
         task = self.reduce_tasks.get(reduce_id)
@@ -414,6 +430,22 @@ class JobStateMachine:
             )
             logger.info(f"[{self.job_id}] reducer_{reduce_id} completed ✓")
             await self._check_reducing_complete()
+        elif status == "failed":
+            if task.timer_handle:
+                task.timer_handle.cancel()
+                task.timer_handle = None
+            logger.warning(f"[{self.job_id}] reducer_{reduce_id} reported failure (attempt={task.attempt_number})")
+            if task.attempt_number >= self.config["max_task_retries"]:
+                task.status = TASK_STATUS_FAILED
+                await self.db.execute(
+                    "UPDATE reduce_tasks SET status=$1 WHERE job_id=$2 AND reduce_id=$3",
+                    TASK_STATUS_FAILED, self.job_id, reduce_id,
+                )
+                await self._fail_job(
+                    f"reduce_task {reduce_id} exceeded max_task_retries ({self.config['max_task_retries']})"
+                )
+                return
+            await self._spawn_and_track_reducer(reduce_id)
 
     # -----------------------------------------------------------------------
     # Timeout handlers
