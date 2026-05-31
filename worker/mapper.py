@@ -306,11 +306,11 @@ async def run() -> None:
     ping_task = asyncio.create_task(ping_loop())
 
     try:
-        # Step 1 — load user code
-        user_map = load_user_map_function(CODE_PATH)
+        # Step 1 — load user code, offload the synchronous MinIO download
+        user_map = await asyncio.to_thread(load_user_map_function, CODE_PATH)
 
-        # Step 2 — stream byte range from MinIO and upload reducer shards per batch.
-        pairs_emitted = _run_sync_core(user_map)
+        # Step 2 — stream byte range from MinIO and upload reducer shards per batch, offload the heavy blocking data processing to a background thread
+        pairs_emitted = await asyncio.to_thread(_run_sync_core, user_map)
 
         prefix = f"mapper_{MAP_ID}"
         print(f"[{prefix}] Total pairs emitted: {pairs_emitted}")

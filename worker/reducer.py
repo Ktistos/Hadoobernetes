@@ -117,7 +117,8 @@ def _setup_sqlite(db_path: str) -> tuple[sqlite3.Connection, sqlite3.Cursor]:
     - journal_mode=MEMORY : keep the rollback journal in RAM, not on disk
     - cache_size=-65536  : allow 64 MB page cache (speeds up ORDER BY scan)
     """
-    conn   = sqlite3.connect(db_path)
+    # check_same_thread=False allows our asyncio background threads to use this connection
+    conn   = sqlite3.connect(db_path, check_same_thread=False)
     cursor = conn.cursor()
     cursor.executescript("""
         PRAGMA synchronous   = OFF;
@@ -222,8 +223,8 @@ async def run() -> None:
     tmp_output_path = None
 
     try:
-        # Step 1 — load user reduce function
-        user_reduce = load_user_reduce_function(CODE_PATH)
+        # Step 1 — load user reduce function, offload synchronous MinIO download
+        user_reduce = await asyncio.to_thread(load_user_reduce_function, CODE_PATH)
 
         # Step 2 — set up SQLite database on local ephemeral disk
         db_fd, db_path = tempfile.mkstemp(suffix=".sqlite")
@@ -246,8 +247,9 @@ async def run() -> None:
         for obj in objects:
             response = None
             try:
-                response = minio_client.get_object(MINIO_BUCKET, obj.object_name)
-                rows = _ingest_partition(cursor, response)
+                # Offload the blocking network call and the heavy DB ingestion
+                response = await asyncio.to_thread(minio_client.get_object, MINIO_BUCKET, obj.object_name)
+                rows = await asyncio.to_thread(_ingest_partition, cursor, response)
                 total_rows += rows
             finally:
                 # Always release the urllib3 socket back to the pool.
@@ -264,7 +266,8 @@ async def run() -> None:
         os.close(tmp_out_fd)
 
         with open(tmp_output_path, "wb") as out_fh:
-            result_count = _run_reduce_phase(conn, user_reduce, out_fh)
+            # Offload the heavy sorting and reducing phase
+            result_count = await asyncio.to_thread(_run_reduce_phase, conn, user_reduce, out_fh)
 
         conn.close()
         print(f"[reducer_{REDUCER_ID}] Reduce complete: {result_count} output pairs.")
@@ -272,10 +275,12 @@ async def run() -> None:
         # Step 5 — Upload final output to MinIO
         output_size = os.path.getsize(tmp_output_path)
         with open(tmp_output_path, "rb") as fh:
-            minio_client.put_object(
+            # Offload the final synchronous network upload
+            await asyncio.to_thread(
+                minio_client.put_object,
                 MINIO_BUCKET, OUTPUT_PATH,
                 fh, output_size,
-                content_type="application/jsonl",
+                content_type="application/jsonl"
             )
 
         ping_task.cancel()
