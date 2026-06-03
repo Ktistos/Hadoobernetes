@@ -60,7 +60,7 @@ fi
 echo ""
 echo "==> Building the Worker image locally.."
 if [ -d "./worker" ]; then
-    docker build -t mapreduce-worker:latest ./worker
+    docker build -t hadoobernetes/mapreduce-worker:latest ./worker
     echo "    Image built successfully!"
 else
     echo "--------------------------------------------------"
