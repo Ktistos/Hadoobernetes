@@ -2,7 +2,7 @@
 set -e
 
 echo "==> Starting Minikube..."
-minikube start --driver=docker --cpus=no-limit --memory=no-limit
+minikube start --driver=docker --cpus=4 --memory=6144
 
 echo ""
 echo "==> Enabling addons..."

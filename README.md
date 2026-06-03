@@ -1,62 +1,94 @@
-## CLI/CLUSTER MANAGER (WINDOWS VERSION)
+# Hadoobernetes - Windows Setup and Usage Guide
 
-Created the core directories, added the necessary deployment files, and updated the init script to build everything locally. It hasn't been fully stress-tested yet, but the end-to-end flow seems to work so far!
+## 1. Setup 
 
-### 1. What was added/fixed
-* **`cluster_manager/`**: Created the FastAPI app to handle API requests and spawn Kubernetes jobs.
-* **`cli/`**: Created the `hadoob` CLI for staging files and submitting jobs.
-* **K8s Manifests**: Added deployment, service, and ingress files for the Cluster Manager. 
-* **`minikube-init.sh`**: Updated to automatically build the `cluster-manager` image directly into Minikube's internal registry.
+Ensure that:
+- Docker Desktop (with WSL2 backend) 
+- WSL2
+- Minikube (Inside WSL)
 
-### 2. How to set it up from scratch
-Wipe the old cluster and run the updated automated script:
+are installed. Wipe any existing cluster and run the initialization script from the repository root:
+
 ```bash
 minikube delete
+ ```
+
+```bash
 bash init_scripts/minikube-init.sh
+```
+```bash
 kubectl apply -f ./deployment/k8s_resources/ -R
 ```
+Open your network tunnel in a separate terminal tab to route ingress traffic:
 
-Open your network tunnel in a separate terminal tab:
 ```bash
 sudo kubectl --kubeconfig ~/.kube/config port-forward --namespace=ingress-nginx service/ingress-nginx-controller 80:80 --address 0.0.0.0
 ```
 
-### 3. How to test it
-Activate your CLI environment and run the commands:
+Activate the CLI environment and set the required environment variables:
+
 ```bash
-# Activate and set environment variables
-source cli/.venv/bin/activate
+cd cli
+pip install -e .
 export CLUSTER_MANAGER_URL="http://api.minikube.local"
 export KEYCLOAK_URL="http://kc.minikube.local"
 export MINIO_URL="minio.minikube.local:80"
+```
 
-# Run the automated unit tests
-pytest cli/tests/
-pytest cluster_manager/tests/
+Now you must modify your hosts file to include the following ips (add the following line):
+```
+127.0.0.1 api.minikube.local kc.minikube.local minio.minikube.local minio-console.minikube.local
+```
 
-# Or test the CLI manually
+You can also access the minIO and Keycloak pages on the following links:
+
+- *Keycloak*:      http://kc.minikube.local (admin/admin)
+- *MinIO* : http://minio-console.minikube.local (minioadmin/minioadmin)
+
+
+## 2. Login
+
+Authenticate with the Keycloak service. You can pass credentials directly or let the CLI prompt you.
+
+```bash
 hadoob login --username testuser --password test
-echo "dummy data" > input.txt
-echo "print('hello')" > job.py
+```
+
+## 3. Place the Text File / Code File
+
+The `submit` command automatically handles staging your local input data and execution code to MinIO. However, if you need to manually upload files to your isolated storage directory in MinIO, use the `upload` command:
+
+```bash
+hadoob upload ./local_dataset.txt remote_folder/dataset.txt
+```
+
+## 4. Run Job
+
+Submit the Map-Reduce job. Provide the local paths to your input file and Python script. The CLI uploads these to MinIO automatically, calculates sizes, and dispatches the payload to the Cluster Manager.
+
+```bash
 hadoob submit --mappers 2 --reducers 1 --input-file ./input.txt --code ./job.py
 ```
+The system will output a Job ID upon successful submission.
 
-### 4. WIP, not fully tested out
+## 5. See Status
 
-### 5. Mapper/reducer intermediate data flow
-Current worker behavior on `windows_support`:
+Fetch the real-time execution status of the Map-Reduce job using the returned Job ID.
+```bash
+hadoob status <job_id>
+```
+If you need to forcefully terminate an active job:
+```bash
+hadoob abort <job_id>
+```
+## 6. Access Output Files
 
-* **Mapper input**: each mapper reads `INPUT_PATH` from MinIO with buffered range reads. The current buffer size is `64 MiB`.
-* **Chunk ownership**:
-  * if `OFFSET_START` lands in the middle of a line, the mapper skips that partial line
-  * if a line starts before `OFFSET_END`, that mapper owns the whole line even if the line ends after `OFFSET_END`
-* **Intermediate format**: mapper-emitted pairs are stored as `JSONL`, one `[key, value]` array per line.
-* **Intermediate object layout**: for each streamed input batch, the mapper uploads one shard object per reducer that received data:
+Once the job status reflects completion, download the result files from MinIO to your local machine.
 
-```text
-intermediate/{JOB_ID}/reducer_{REDUCER_ID}/from_mapper_{MAP_ID}_chunk_{BATCH_INDEX}.jsonl
+```bash
+hadoob download <remote_path> ./local_output.txt
 ```
 
-* **Reducer input**: each reducer lists its own `intermediate/{JOB_ID}/reducer_{REDUCER_ID}/` prefix in MinIO and ingests every shard object it finds there.
+You may also see output files in the minIO url shown above in 1. Setup
 
-This means reducers are compatible with multiple mapper shard files per reducer directory, and mappers do not need one long-lived local output file per reducer.
+Anything comes up, ask your coding agent :P
