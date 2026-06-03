@@ -10,8 +10,15 @@ metadata:
   name: mapreduce-role
   namespace: mapreduce
 rules:
-- apiGroups: ["batch", ""]
-  resources: ["jobs", "pods"]
+# batch/v1 Jobs: the Cluster Manager spawns the per-job master Job, and the
+# Job Master spawns mapper/reducer worker Jobs.
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "delete", "get", "list", "watch"]
+# Core API group: pods (worker/master pods) and services (the per-job headless
+# Service that gives each Job Master a stable DNS name for worker pings).
+- apiGroups: [""]
+  resources: ["pods", "services"]
   verbs: ["create", "delete", "get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

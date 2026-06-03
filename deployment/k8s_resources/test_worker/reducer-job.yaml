@@ -1,4 +1,3 @@
-# reducer-job.yaml
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -17,7 +16,7 @@ spec:
         - name: WORKER_ID
           value: "reducer_0"
         - name: JOB_ID
-          value: "test-job-profile-1" # MUST MATCH THE MAPPER'S JOB ID
+          value: "test-job-profile-1"
         - name: REDUCER_ID
           value: "0"
         - name: NUM_MAPPERS
@@ -27,7 +26,7 @@ spec:
         - name: OUTPUT_PATH
           value: "output/final_wordcount.jsonl"
         - name: MINIO_ENDPOINT
-          value: "host.minikube.internal:9000"
+          value: "minio.minio-tenant.svc.cluster.local:80"
         - name: MINIO_ACCESS_KEY
           value: "minioadmin"
         - name: MINIO_SECRET_KEY
@@ -35,5 +34,5 @@ spec:
         - name: MINIO_BUCKET
           value: "mapreduce"
         - name: PROFILE
-          value: "1" # TURN ON PROFILING!
+          value: "1"
       restartPolicy: Never

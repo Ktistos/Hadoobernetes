@@ -44,5 +44,33 @@ else
 fi
 
 echo ""
+echo "==> Building the Job Master image locally..."
+if [ -d "./job_master" ]; then
+    docker build -t hadoobernetes/job-master:latest ./job_master
+    echo "    Image built successfully!"
+else
+    echo "--------------------------------------------------"
+    echo " ERROR: ./job_master directory not found!"
+    echo " Please ensure you are running this script from the root of the repository:"              
+    echo " bash init_scripts/minikube-init.sh"
+    echo "--------------------------------------------------"
+    exit 1
+fi
+
+echo ""
+echo "==> Building the Worker image locally.."
+if [ -d "./worker" ]; then
+    docker build -t mapreduce-worker:latest ./worker
+    echo "    Image built successfully!"
+else
+    echo "--------------------------------------------------"
+    echo " ERROR: ./worker directory not found!"
+    echo " Please ensure you are running this script from the root of the repository:"              
+    echo " bash init_scripts/minikube-init.sh"
+    echo "--------------------------------------------------"
+    exit 1
+fi
+
+echo ""
 echo "Minikube is ready. Deploy the stack with:"
 echo "  kubectl apply -f ./deployment/k8s_resources/ -R"
