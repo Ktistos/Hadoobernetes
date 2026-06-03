@@ -16,7 +16,7 @@ spec:
       serviceAccountName: mapreduce-sa # Ensure this service account has RBAC permissions to spawn Jobs!
       containers:
         - name: cluster-manager
-          image: hadoobernetes/cluster-manager:latest
+          image: ktistos/cluster-manager:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

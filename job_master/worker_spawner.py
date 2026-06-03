@@ -27,7 +27,7 @@ import os
 from kubernetes import client as k8s_client, config as k8s_config
 logger = logging.getLogger(__name__)
 _NAMESPACE = os.environ.get("K8S_NAMESPACE", "default")
-_WORKER_IMAGE = "hadoobernetes/mapreduce-worker:latest"
+_WORKER_IMAGE = "ktistos/mapreduce-worker:latest"
 _batch_v1: k8s_client.BatchV1Api | None = None
 def _get_batch_v1() -> k8s_client.BatchV1Api:
     """Return (and lazily create) the BatchV1Api client."""

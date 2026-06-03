@@ -36,6 +36,7 @@ def test_spawn_job_master(monkeypatch):
     assert job_body.metadata.labels["mr-job-id"] == str(test_id)
     assert job_body.spec.template.metadata.labels["mr-job-id"] == str(test_id)
     assert job_body.spec.template.spec.service_account_name == "mapreduce-sa"
+    assert container.image == "ktistos/job-master:latest"
     assert container.image_pull_policy == "Always"
     assert container.ports[0].container_port == 8000
     assert container.readiness_probe.http_get.path == "/readyz"

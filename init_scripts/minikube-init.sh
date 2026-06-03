@@ -32,7 +32,7 @@ eval $(minikube docker-env)
 echo ""
 echo "==> Building the Cluster Manager image locally..."
 if [ -d "./cluster_manager" ]; then
-    docker build -t hadoobernetes/cluster-manager:latest ./cluster_manager
+    docker build -t ktistos/cluster-manager:latest ./cluster_manager
     echo "    Image built successfully!"
 else
     echo "--------------------------------------------------"
@@ -46,7 +46,7 @@ fi
 echo ""
 echo "==> Building the Job Master image locally..."
 if [ -d "./job_master" ]; then
-    docker build -t hadoobernetes/job-master:latest ./job_master
+    docker build -t ktistos/job-master:latest ./job_master
     echo "    Image built successfully!"
 else
     echo "--------------------------------------------------"
@@ -60,7 +60,7 @@ fi
 echo ""
 echo "==> Building the Worker image locally.."
 if [ -d "./worker" ]; then
-    docker build -t hadoobernetes/mapreduce-worker:latest ./worker
+    docker build -t ktistos/mapreduce-worker:latest ./worker
     echo "    Image built successfully!"
 else
     echo "--------------------------------------------------"

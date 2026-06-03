@@ -35,7 +35,7 @@ def spawn_job_master(job_id: UUID):
     job_master_service_url = f"http://{service_name}.{namespace}.svc.cluster.local:8000"
     container = client.V1Container(
         name="job-master",
-        image="hadoobernetes/job-master:latest",
+        image="ktistos/job-master:latest",
         image_pull_policy="Always",
         ports=[
             client.V1ContainerPort(container_port=8000),
