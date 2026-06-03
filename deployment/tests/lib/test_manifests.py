@@ -66,3 +66,15 @@ def test_cluster_manager_has_internal_update_token_secret_ref():
 
     token_ref = env["INTERNAL_UPDATE_TOKEN"]["valueFrom"]["secretKeyRef"]
     assert token_ref == {"name": "internal-secret", "key": "INTERNAL_UPDATE_TOKEN"}
+
+
+def test_declared_image_pull_policies_are_always():
+    mismatched = []
+    for path, doc in _load_docs():
+        for pod_spec in _pod_specs(doc):
+            for container in _containers(pod_spec):
+                policy = container.get("imagePullPolicy")
+                if policy is not None and policy != "Always":
+                    mismatched.append(f"{path}:{container.get('name')}={policy}")
+
+    assert mismatched == []

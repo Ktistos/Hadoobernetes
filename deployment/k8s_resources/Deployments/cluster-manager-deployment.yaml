@@ -17,7 +17,7 @@ spec:
       containers:
         - name: cluster-manager
           image: hadoobernetes/cluster-manager:latest
-          imagePullPolicy: Never # Forces Minikube to use the local image we build
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
           readinessProbe:

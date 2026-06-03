@@ -906,6 +906,7 @@ class TestWorkerSpawner:
         submitted_job = mock_api.create_namespaced_job.call_args[1]["body"]
         container = submitted_job.spec.template.spec.containers[0]
         assert container.image == "mapreduce-worker:latest"
+        assert container.image_pull_policy == "Always"
         assert container.command == ["python", "/app/worker/mapper.py"]
 
     def test_spawn_reducer_calls_create_k8s_job(self):
@@ -938,6 +939,7 @@ class TestWorkerSpawner:
         submitted_job = mock_api.create_namespaced_job.call_args[1]["body"]
         container = submitted_job.spec.template.spec.containers[0]
         assert container.image == "mapreduce-worker:latest"
+        assert container.image_pull_policy == "Always"
         assert container.command == ["python", "/app/worker/reducer.py"]
 
     def test_spawn_mapper_backoff_limit_is_zero(self):

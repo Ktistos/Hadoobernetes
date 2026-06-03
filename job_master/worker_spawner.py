@@ -99,7 +99,7 @@ def _create_k8s_job(
                         k8s_client.V1Container(
                             name    = "worker",
                             image   = _WORKER_IMAGE,
-                            image_pull_policy="Never",
+                            image_pull_policy="Always",
                             command = command,
                             env     = env_vars,
                             resources = k8s_client.V1ResourceRequirements(

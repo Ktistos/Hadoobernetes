@@ -8,7 +8,7 @@ spec:
       containers:
       - name: worker
         image: mapreduce-worker:latest
-        imagePullPolicy: Never
+        imagePullPolicy: Always
         command: ["python", "/app/worker/reducer.py"]
         env:
         - name: JOB_MASTER_URL

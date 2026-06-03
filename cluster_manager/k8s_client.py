@@ -36,7 +36,7 @@ def spawn_job_master(job_id: UUID):
     container = client.V1Container(
         name="job-master",
         image="hadoobernetes/job-master:latest",
-        image_pull_policy="Never",
+        image_pull_policy="Always",
         ports=[
             client.V1ContainerPort(container_port=8000),
         ],
