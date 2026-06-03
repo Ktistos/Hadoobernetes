@@ -61,6 +61,7 @@ deployment/
 |       |-- postgres-secret.yaml
 |       |-- keycloak-secret.yaml
 |       |-- minio-secret.yaml
+|       |-- internal-secret.yaml
 |
 |-- setup/                    Python environment setup.
 |   |-- requirements.txt      Python dependencies for the test scripts.

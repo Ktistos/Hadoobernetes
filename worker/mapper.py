@@ -53,6 +53,7 @@ MINIO_ACCESS_KEY = os.environ["MINIO_ACCESS_KEY"]
 MINIO_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
 MINIO_BUCKET     = os.environ["MINIO_BUCKET"]
 PING_INTERVAL    = int(os.environ.get("PING_INTERVAL", "10"))
+INTERMEDIATE_PREFIX = os.environ.get("INTERMEDIATE_PREFIX", f"intermediate/{JOB_ID}/")
 READ_BLOCK_SIZE  = 64 * 1024 * 1024
 minio_client = Minio(MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, secure=False)
 _http_client: httpx.AsyncClient | None = None
@@ -173,8 +174,9 @@ def _iter_owned_line_batches(object_path: str):
         carry = data[scan_offset:]
         carry_start = data_start + scan_offset
 def _partition_object_path(reducer_id: int, batch_index: int) -> str:
+    prefix = INTERMEDIATE_PREFIX.rstrip("/")
     return (
-        f"intermediate/{JOB_ID}"
+        f"{prefix}"
         f"/reducer_{reducer_id}"
         f"/from_mapper_{MAP_ID}_chunk_{batch_index:06d}.jsonl"
     )
@@ -210,8 +212,9 @@ def _purge_previous_shards() -> int:
     Returns the number of stale objects removed.
     """
     removed = 0
+    base_prefix = INTERMEDIATE_PREFIX.rstrip("/")
     for reducer_id in range(NUM_REDUCERS):
-        prefix = f"intermediate/{JOB_ID}/reducer_{reducer_id}/from_mapper_{MAP_ID}_"
+        prefix = f"{base_prefix}/reducer_{reducer_id}/from_mapper_{MAP_ID}_"
         stale = list(
             minio_client.list_objects(MINIO_BUCKET, prefix=prefix, recursive=True)
         )
@@ -261,17 +264,11 @@ async def run() -> None:
     await ping("started")
     ping_task = asyncio.create_task(ping_loop())
     try:
-<<<<<<< HEAD
-        user_map = await asyncio.to_thread(load_user_map_function, CODE_PATH)
-        pairs_emitted = await asyncio.to_thread(_run_sync_core, user_map)
-=======
-        # Step 1 — load user code, offload the synchronous MinIO download
+        # Step 1 - load user code, offload the synchronous MinIO download
         user_map = await asyncio.to_thread(load_user_map_function, CODE_PATH)
 
-        # Step 2 — stream byte range from MinIO and upload reducer shards per batch, offload the heavy blocking data processing to a background thread
+        # Step 2 - stream byte range from MinIO and upload reducer shards per batch, offload the heavy blocking data processing to a background thread
         pairs_emitted = await asyncio.to_thread(_run_sync_core, user_map)
-
->>>>>>> ce3eae79c114fd990d93e4b2589eba89e9daed2e
         prefix = f"mapper_{MAP_ID}"
         print(f"[{prefix}] Total pairs emitted: {pairs_emitted}")
         ping_task.cancel()

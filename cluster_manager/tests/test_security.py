@@ -25,7 +25,7 @@ def test_get_keycloak_public_key(monkeypatch):
 
 def test_verify_token_valid(monkeypatch):
     monkeypatch.setattr(security, "get_keycloak_public_key", AsyncMock(return_value="mock_key"))
-    monkeypatch.setattr(jwt, "decode", lambda *args, **kwargs: {"sub": "user-123"})
+    monkeypatch.setattr(jwt, "decode", lambda *args, **kwargs: {"sub": "user-123", "azp": "mapreduce-client"})
     
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="valid_token")
     payload = asyncio.run(security.verify_token(creds))
@@ -89,3 +89,15 @@ def test_require_admin_rejects_non_admin(monkeypatch):
         )
 
     assert exc.value.status_code == 403
+
+
+def test_verify_token_rejects_wrong_client(monkeypatch):
+    monkeypatch.setattr(security, "get_keycloak_public_key", AsyncMock(return_value="mock_key"))
+    monkeypatch.setattr(jwt, "decode", lambda *args, **kwargs: {"sub": "user-123", "azp": "other-client"})
+
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="wrong_client_token")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(security.verify_token(creds))
+
+    assert exc.value.status_code == 401
+    assert "not issued for this client" in exc.value.detail

@@ -11,7 +11,7 @@ from schemas import JobSubmissionRequest
 DB_USER = os.getenv("POSTGRES_USER", "admin")
 DB_PASS = os.getenv("POSTGRES_PASSWORD", "admin")
 DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
-DB_PORT = os.getenv("DB_PORT", "5432")
+DB_PORT = os.getenv("POSTGRES_PORT", os.getenv("DB_PORT", "5432"))
 DB_NAME = os.getenv("POSTGRES_DB", "mapreduce")
 _pool: Pool | None = None
 async def init_db_pool():

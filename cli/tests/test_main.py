@@ -28,6 +28,7 @@ def test_submit_command(monkeypatch, tmp_path):
     code_file.write_text("print('hello')")
     
     # Mock the heavy lifting
+    monkeypatch.setattr(auth, "get_current_user_id", lambda: "user-123")
     monkeypatch.setattr(storage, "upload_file", lambda f, prefix: f"minio://mock/{prefix}/test")
     monkeypatch.setattr(api_client, "submit_job", lambda payload: {"job_id": "uuid-9999"})
     

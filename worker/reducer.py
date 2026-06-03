@@ -54,6 +54,7 @@ MINIO_ACCESS_KEY = os.environ["MINIO_ACCESS_KEY"]
 MINIO_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
 MINIO_BUCKET     = os.environ["MINIO_BUCKET"]
 PING_INTERVAL    = int(os.environ.get("PING_INTERVAL", "10"))
+INTERMEDIATE_PREFIX = os.environ.get("INTERMEDIATE_PREFIX", f"intermediate/{JOB_ID}/")
 
 # SQLite batch size: number of rows inserted per executemany call.
 # 5000 is a good balance between memory use and insert overhead.
@@ -235,7 +236,7 @@ async def run() -> None:
         # partition files directly from MinIO into SQLite (Opt 2.1 + 3.3).
         # list_objects() returns only files that actually exist, so we never
         # 404 on mappers that had no data for this reducer.
-        prefix  = f"intermediate/{JOB_ID}/reducer_{REDUCER_ID}/"
+        prefix  = f"{INTERMEDIATE_PREFIX.rstrip('/')}/reducer_{REDUCER_ID}/"
         objects = list(minio_client.list_objects(MINIO_BUCKET, prefix=prefix, recursive=True))
 
         print(

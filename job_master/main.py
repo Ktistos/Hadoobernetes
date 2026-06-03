@@ -19,6 +19,7 @@ Environment variables (all required unless noted):
   MINIO_ACCESS_KEY
   MINIO_SECRET_KEY
   MINIO_BUCKET
+  INTERNAL_UPDATE_TOKEN   Shared token used for Cluster Manager state callbacks
   K8S_NAMESPACE           (optional, default "default")
   PING_INTERVAL           (optional, default 10 seconds, passed to workers)
 """
@@ -74,7 +75,7 @@ app = FastAPI(title="Job Master", lifespan=lifespan)
 class WorkerPingRequest(BaseModel):
     worker_id:   str   # e.g. "mapper_3" or "reducer_1"
     worker_type: str   # "mapper" | "reducer"
-    status:      str   # "started" | "alive" | "completed"  (design doc §3.2)
+    status:      str   # "started" | "alive" | "completed" | "failed"
 
 
 class WorkerPingResponse(BaseModel):
@@ -95,7 +96,7 @@ async def worker_ping(req: WorkerPingRequest):
         raise HTTPException(status_code=503, detail="State machine not initialised")
     if req.worker_type not in ("mapper", "reducer"):
         raise HTTPException(status_code=400, detail=f"Unknown worker_type: {req.worker_type}")
-    if req.status not in ("started", "alive", "completed", "failed"): #temporarily add "failed" status for better error handling
+    if req.status not in ("started", "alive", "completed", "failed"):
         raise HTTPException(status_code=400, detail=f"Unknown status: {req.status}")
 
     await state_machine.handle_ping(req.worker_id, req.worker_type, req.status)

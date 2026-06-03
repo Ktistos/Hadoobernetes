@@ -388,6 +388,26 @@ class TestRunSyncCore:
         values = [value for _, value in self._collect_pairs(uploads)]
         assert values == ["alpha", "bravo"]
 
+    def test_partition_object_path_uses_intermediate_prefix(self):
+        with patch.object(mapper, "INTERMEDIATE_PREFIX", "custom/intermediate/prefix/"):
+            path = mapper._partition_object_path(reducer_id=1, batch_index=2)
+
+        assert path == "custom/intermediate/prefix/reducer_1/from_mapper_0_chunk_000002.jsonl"
+
+    def test_purge_previous_shards_uses_intermediate_prefix(self):
+        mock_minio = MagicMock()
+        mock_minio.list_objects.return_value = []
+
+        with patch.object(mapper, "minio_client", mock_minio), \
+             patch.object(mapper, "INTERMEDIATE_PREFIX", "custom/intermediate/prefix/"):
+            mapper._purge_previous_shards()
+
+        prefixes = [call.kwargs["prefix"] for call in mock_minio.list_objects.call_args_list]
+        assert prefixes == [
+            "custom/intermediate/prefix/reducer_0/from_mapper_0_",
+            "custom/intermediate/prefix/reducer_1/from_mapper_0_",
+        ]
+
     def test_outputs_are_sharded_per_input_batch(self):
         """Reducer objects should be emitted as chunk shards, not one local file per reducer."""
         input_data = _make_input_bytes(["alpha", "beta", "gamma", "delta"])
@@ -896,6 +916,48 @@ class TestReducerRunIntegration:
         assert results["apple"]  == 3
         assert results["banana"] == 1
         assert results["cherry"] == 1
+
+    @pytest.mark.asyncio
+    async def test_full_run_uses_intermediate_prefix(self):
+        partition = _make_jsonl_content([("apple", "1")])
+        partitions = {
+            f"custom/intermediate/{JOB_ID}/reducer_0/from_mapper_0.jsonl": partition,
+        }
+        uploaded: dict[str, bytes] = {}
+
+        def fake_list_objects(bucket, prefix=None, recursive=False):
+            assert prefix == f"custom/intermediate/{JOB_ID}/reducer_0/"
+            return [MagicMock(object_name=name) for name in partitions]
+
+        def fake_get_object(bucket, path):
+            response = io.BytesIO(partitions[path])
+            response.close = lambda: None
+            response.release_conn = lambda: None
+            return response
+
+        def fake_fget_object(bucket, path, local):
+            with open(local, "w") as f:
+                f.write("def reduce(key, values):\n    yield key, str(len(values))\n")
+
+        def fake_put_object(bucket, path, data, size, content_type=None):
+            uploaded[path] = data.read()
+
+        mock_minio = MagicMock()
+        mock_minio.list_objects.side_effect = fake_list_objects
+        mock_minio.get_object.side_effect = fake_get_object
+        mock_minio.fget_object.side_effect = fake_fget_object
+        mock_minio.put_object.side_effect = fake_put_object
+
+        mock_http = AsyncMock()
+        mock_http.post = AsyncMock(return_value=MagicMock())
+        mock_http.is_closed = False
+
+        with patch.object(reducer, "minio_client", mock_minio), \
+             patch.object(reducer, "_http_client", mock_http), \
+             patch.object(reducer, "INTERMEDIATE_PREFIX", f"custom/intermediate/{JOB_ID}/"):
+            await reducer.run()
+
+        assert "output/part_0.jsonl" in uploaded
 
     @pytest.mark.asyncio
     async def test_run_sends_started_and_completed_pings(self):

@@ -478,9 +478,15 @@ class JobStateMachine:
     async def _notify_cluster_manager(self, status: str):
         url     = os.environ["CLUSTER_MANAGER_URL"]
         payload = {"job_id": self.job_id, "status": status}
+        headers = {"X-Internal-Token": os.environ["INTERNAL_UPDATE_TOKEN"]}
         async with httpx.AsyncClient() as client:
             try:
-                resp = await client.post(f"{url}/update_job_state/{self.job_id}", json=payload, timeout=10)
+                resp = await client.post(
+                    f"{url}/update_job_state/{self.job_id}",
+                    json=payload,
+                    headers=headers,
+                    timeout=10,
+                )
                 resp.raise_for_status()
                 logger.info(f"[{self.job_id}] Notified Cluster Manager: status={status}")
             except Exception as exc:

@@ -1,6 +1,6 @@
 import pytest
 from pydantic import ValidationError
-from schemas import JobSubmissionRequest
+from schemas import JobSubmissionRequest, UpdateJobStateRequest
 
 def test_valid_job_submission():
     """Test that a valid payload parses successfully with correct defaults."""
@@ -8,7 +8,6 @@ def test_valid_job_submission():
         "num_mappers": 5,
         "num_reducers": 2,
         "input_data_path": "minio://bucket/input.txt",
-        "output_data_path": "minio://bucket/output/",
         "code_location": "minio://bucket/script.py",
         "input_file_size_bytes": 1048576  # 1 MB
     }
@@ -28,7 +27,6 @@ def test_invalid_zero_mappers():
         "num_mappers": 0,  # Invalid: must be > 0
         "num_reducers": 2,
         "input_data_path": "minio://bucket/input.txt",
-        "output_data_path": "minio://bucket/output/",
         "code_location": "minio://bucket/script.py",
         "input_file_size_bytes": 1048576
     }
@@ -44,7 +42,6 @@ def test_missing_required_fields():
         "num_mappers": 5,
         # Missing num_reducers
         "input_data_path": "minio://bucket/input.txt",
-        # Missing output_data_path
         "code_location": "minio://bucket/script.py",
         "input_file_size_bytes": 1048576
     }
@@ -55,7 +52,7 @@ def test_missing_required_fields():
     errors = exc_info.value.errors()
     missing_fields = [err["loc"][0] for err in errors]
     assert "num_reducers" in missing_fields
-    assert "output_data_path" in missing_fields
+    assert "output_data_path" not in missing_fields
 
 def test_invalid_negative_file_size():
     """Test that a negative file size is rejected."""
@@ -63,7 +60,6 @@ def test_invalid_negative_file_size():
         "num_mappers": 5,
         "num_reducers": 2,
         "input_data_path": "minio://bucket/input.txt",
-        "output_data_path": "minio://bucket/output/",
         "code_location": "minio://bucket/script.py",
         "input_file_size_bytes": -500  # Invalid
     }
@@ -72,3 +68,11 @@ def test_invalid_negative_file_size():
         JobSubmissionRequest(**payload)
         
     assert "Input should be greater than 0" in str(exc_info.value)
+
+def test_update_job_state_rejects_non_job_status():
+    with pytest.raises(ValidationError):
+        UpdateJobStateRequest(status="running")
+
+def test_update_job_state_accepts_terminal_job_status():
+    req = UpdateJobStateRequest(status="completed")
+    assert req.status == "completed"

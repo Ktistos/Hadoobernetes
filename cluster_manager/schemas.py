@@ -4,9 +4,12 @@ This module defines the data validation models used for incoming requests
 and outgoing responses in the FastAPI application.
 """
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 from datetime import datetime
+
+JobStatusValue = Literal["pending", "mapping", "reducing", "completed", "failed", "aborted"]
+
 class JobSubmissionRequest(BaseModel):
     """
     Schema for a new Map-Reduce job submission request.
@@ -55,7 +58,7 @@ class JobStatusResponse(BaseModel):
         completed_at (Optional[datetime]): Timestamp when the job finished or failed.
     """
     job_id: UUID
-    status: str
+    status: JobStatusValue
     completed_mappers_count: int
     completed_reducers_count: int
     created_at: datetime
@@ -67,4 +70,4 @@ class UpdateJobStateRequest(BaseModel):
     Attributes:
         status (str): The new status to apply to the job in the database.
     """
-    status: str
+    status: JobStatusValue

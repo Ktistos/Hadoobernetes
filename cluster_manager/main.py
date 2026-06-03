@@ -7,8 +7,10 @@ and security protocols into a set of exposed HTTP endpoints.
 
 from contextlib import asynccontextmanager
 from uuid import UUID
+import os
+import secrets
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, Header, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
@@ -30,6 +32,16 @@ async def lifespan(app: FastAPI):
     await db.close_db_pool()
 
 app = FastAPI(title="Hadoobernetes Cluster Manager", lifespan=lifespan)
+
+
+def require_internal_update_token(
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+) -> None:
+    expected = os.getenv("INTERNAL_UPDATE_TOKEN")
+    if not expected:
+        raise HTTPException(status_code=500, detail="Internal update token is not configured")
+    if not x_internal_token or not secrets.compare_digest(x_internal_token, expected):
+        raise HTTPException(status_code=403, detail="Invalid internal update token")
 
 
 async def _check_database_ready() -> tuple[bool, str]:
@@ -139,7 +151,7 @@ async def get_all_jobs_admin(admin_user_id: str = Depends(require_admin)):
     return {"jobs": jobs}
 
 @app.post("/update_job_state/{job_id}")
-async def update_job_state(job_id: UUID, req: UpdateJobStateRequest):
+async def update_job_state(job_id: UUID, req: UpdateJobStateRequest, _: None = Depends(require_internal_update_token)):
     """
     Internal endpoint used exclusively by the Job Master pod to notify the Cluster Manager
     of major phase transitions (e.g., pending -> mapping -> reducing -> completed).

@@ -44,11 +44,11 @@ def _get_batch_v1() -> k8s_client.BatchV1Api:
 def _job_name(role: str, job_id: str, task_id: int, attempt: int) -> str:
     """
     Produces a deterministic, DNS-safe Kubernetes Job name.
-    Format:  mr-{role}-{job_id_prefix8}-{task_id}-{attempt}
-    Example: mr-mapper-a1b2c3d4-0-1
+    Format:  mr-{role}-{job_id}-{task_id}-{attempt}
+    Example: mr-mapper-a1b2c3d4-0000-0000-0000-000000000000-0-1
     Max length is well within the 63-char Kubernetes name limit.
     """
-    return f"mr-{role}-{job_id[:8]}-{task_id}-{attempt}"
+    return f"mr-{role}-{job_id}-{task_id}-{attempt}"
 def _base_env(job_id: str, job: dict, config: dict) -> list[k8s_client.V1EnvVar]:
     """
     Environment variables shared by both mapper and reducer pods.

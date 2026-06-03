@@ -39,6 +39,7 @@ os.environ.setdefault("MINIO_ENDPOINT",           "minio:9000")
 os.environ.setdefault("MINIO_ACCESS_KEY",         "minioadmin")
 os.environ.setdefault("MINIO_SECRET_KEY",         "minioadmin")
 os.environ.setdefault("MINIO_BUCKET",             "mapreduce")
+os.environ.setdefault("INTERNAL_UPDATE_TOKEN",    "internal-token")
 os.environ.setdefault("K8S_NAMESPACE",            "default")
 
 import state_machine as sm_module
@@ -573,6 +574,25 @@ class TestDbStatusHelpers:
         mock_notify.assert_called_once_with(JOB_STATUS_FAILED)
 
 
+    @pytest.mark.asyncio
+    async def test_notify_cluster_manager_sends_internal_token_header(self, monkeypatch):
+        machine = make_sm()
+        monkeypatch.setenv("CLUSTER_MANAGER_URL", "http://cluster-manager:8000")
+        monkeypatch.setenv("INTERNAL_UPDATE_TOKEN", "internal-token")
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post.return_value = mock_response
+
+        with patch("state_machine.httpx.AsyncClient", return_value=mock_client):
+            await machine._notify_cluster_manager(JOB_STATUS_COMPLETED)
+
+        post_kwargs = mock_client.__aenter__.return_value.post.call_args.kwargs
+        assert post_kwargs["headers"] == {"X-Internal-Token": "internal-token"}
+        assert post_kwargs["json"] == {"job_id": JOB_ID, "status": JOB_STATUS_COMPLETED}
+
+
 # ===========================================================================
 # 11. Timer management
 # ===========================================================================
@@ -588,7 +608,7 @@ class TestTimerManagement:
         loop = MagicMock()
         loop.call_later = MagicMock(return_value=MagicMock())
 
-        with patch("state_machine.asyncio.get_event_loop", return_value=loop):
+        with patch("state_machine.asyncio.get_running_loop", return_value=loop):
             machine._reset_timer(task, lambda: None)
 
         old_handle.cancel.assert_called_once()
@@ -600,7 +620,7 @@ class TestTimerManagement:
         loop       = MagicMock()
         loop.call_later = MagicMock(return_value=new_handle)
 
-        with patch("state_machine.asyncio.get_event_loop", return_value=loop):
+        with patch("state_machine.asyncio.get_running_loop", return_value=loop):
             machine._reset_timer(task, lambda: None)
 
         # The handle installed on the task must be the one returned by call_later
@@ -617,7 +637,7 @@ class TestTimerManagement:
         loop = MagicMock()
         loop.call_later = MagicMock(return_value=MagicMock())
 
-        with patch("state_machine.asyncio.get_event_loop", return_value=loop):
+        with patch("state_machine.asyncio.get_running_loop", return_value=loop):
             machine._attach_timer_with_remaining(task, lambda: None)
 
         delay = loop.call_later.call_args[0][0]
@@ -633,7 +653,7 @@ class TestTimerManagement:
         loop = MagicMock()
         loop.call_later = MagicMock(return_value=MagicMock())
 
-        with patch("state_machine.asyncio.get_event_loop", return_value=loop):
+        with patch("state_machine.asyncio.get_running_loop", return_value=loop):
             machine._attach_timer_with_remaining(task, lambda: None)
 
         delay = loop.call_later.call_args[0][0]
@@ -824,11 +844,16 @@ class TestWorkerSpawner:
 
     def test_job_name_format(self):
         name = _job_name("mapper", "abcdef12-0000-0000-0000-000000000000", 3, 2)
-        assert name == "mr-mapper-abcdef12-3-2"
+        assert name == "mr-mapper-abcdef12-0000-0000-0000-000000000000-3-2"
 
     def test_job_name_reducer(self):
         name = _job_name("reducer", "12345678-aaaa-bbbb-cccc-000000000000", 0, 1)
-        assert name == "mr-reducer-12345678-0-1"
+        assert name == "mr-reducer-12345678-aaaa-bbbb-cccc-000000000000-0-1"
+
+    def test_job_name_preserves_full_job_id_to_avoid_collisions(self):
+        first = _job_name("mapper", "abcdef12-0000-0000-0000-000000000000", 0, 1)
+        second = _job_name("mapper", "abcdef12-1111-1111-1111-111111111111", 0, 1)
+        assert first != second
 
     def test_job_name_within_k8s_limit(self):
         """Kubernetes Job names must be ≤63 characters."""

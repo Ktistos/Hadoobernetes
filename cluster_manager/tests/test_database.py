@@ -35,7 +35,6 @@ def test_create_job_record(mock_pool):
         num_mappers=2,
         num_reducers=1,
         input_data_path="in",
-        output_data_path="out",
         code_location="code",
         input_file_size_bytes=100
     )

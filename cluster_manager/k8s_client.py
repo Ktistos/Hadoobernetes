@@ -26,8 +26,8 @@ def spawn_job_master(job_id: UUID):
     """
     batch_v1 = client.BatchV1Api()
     core_v1 = client.CoreV1Api()
-    namespace = "mapreduce"
-    job_name = f"job-master-{str(job_id)[:8]}"
+    namespace = os.getenv("K8S_NAMESPACE", "mapreduce")
+    job_name = f"job-master-{str(job_id)}"
     service_name = job_name  # headless Service shares the Job's name
     # Stable in-cluster DNS for this job's master, independent of pod IP.
     # Survives master pod restarts (K8s recreates the pod under the same Job;
@@ -55,19 +55,20 @@ def spawn_job_master(job_id: UUID):
             failure_threshold=3,
         ),
         env=[
-            client.V1EnvVar(name="K8S_NAMESPACE", value="mapreduce"),
+            client.V1EnvVar(name="K8S_NAMESPACE", value=namespace),
             client.V1EnvVar(name="JOB_ID", value=str(job_id)),
             client.V1EnvVar(name="POSTGRES_HOST", value=os.getenv("POSTGRES_HOST", "postgres")),
-            client.V1EnvVar(name="POSTGRES_PORT", value="5432"),
+            client.V1EnvVar(name="POSTGRES_PORT", value=os.getenv("POSTGRES_PORT", os.getenv("DB_PORT", "5432"))),
             client.V1EnvVar(name="POSTGRES_USER", value=os.getenv("POSTGRES_USER", "admin")),
             client.V1EnvVar(name="POSTGRES_PASSWORD", value=os.getenv("POSTGRES_PASSWORD", "admin")),
             client.V1EnvVar(name="POSTGRES_DB", value=os.getenv("POSTGRES_DB", "mapreduce")),
-            client.V1EnvVar(name="CLUSTER_MANAGER_URL", value="http://cluster-manager:8000"),
-            client.V1EnvVar(name="MINIO_ENDPOINT", value="minio.minio-tenant.svc.cluster.local:80"),
-            client.V1EnvVar(name="MINIO_ACCESS_KEY", value="minioadmin"),
-            client.V1EnvVar(name="MINIO_SECRET_KEY", value="minioadmin"),
-            client.V1EnvVar(name="MINIO_BUCKET", value="mapreduce"),
+            client.V1EnvVar(name="CLUSTER_MANAGER_URL", value=os.getenv("CLUSTER_MANAGER_URL", "http://cluster-manager:8000")),
+            client.V1EnvVar(name="MINIO_ENDPOINT", value=os.getenv("MINIO_ENDPOINT", "minio.minio-tenant.svc.cluster.local:80")),
+            client.V1EnvVar(name="MINIO_ACCESS_KEY", value=os.getenv("MINIO_ACCESS_KEY", "minioadmin")),
+            client.V1EnvVar(name="MINIO_SECRET_KEY", value=os.getenv("MINIO_SECRET_KEY", "minioadmin")),
+            client.V1EnvVar(name="MINIO_BUCKET", value=os.getenv("MINIO_BUCKET", "mapreduce")),
             client.V1EnvVar(name="JOB_MASTER_SERVICE_URL", value=job_master_service_url),
+            client.V1EnvVar(name="INTERNAL_UPDATE_TOKEN", value=os.environ["INTERNAL_UPDATE_TOKEN"]),
             client.V1EnvVar(
                 name="POD_IP",
                 value_from=client.V1EnvVarSource(
@@ -113,13 +114,23 @@ def spawn_job_master(job_id: UUID):
             ports=[client.V1ServicePort(port=8000, target_port=8000, name="http")],
         ),
     )
+    service_created = False
     try:
         core_v1.create_namespaced_service(body=service, namespace=namespace)
+        service_created = True
     except client.exceptions.ApiException as exc:
         if exc.status != 409:  # 409 = already exists (idempotent resubmit)
             raise
 
-    batch_v1.create_namespaced_job(body=job, namespace=namespace)
+    try:
+        batch_v1.create_namespaced_job(body=job, namespace=namespace)
+    except Exception:
+        if service_created:
+            try:
+                core_v1.delete_namespaced_service(name=service_name, namespace=namespace)
+            except client.exceptions.ApiException:
+                pass
+        raise
 def terminate_job_pods(job_id: UUID):
     """
     Forcefully terminates the Job Master and all associated worker pods for a given job.
@@ -130,7 +141,7 @@ def terminate_job_pods(job_id: UUID):
     """
     batch_v1 = client.BatchV1Api()
     core_v1 = client.CoreV1Api()
-    namespace = "mapreduce"
+    namespace = os.getenv("K8S_NAMESPACE", "mapreduce")
     label_selector = f"mr-job-id={str(job_id)}"
     jobs = batch_v1.list_namespaced_job(namespace=namespace, label_selector=label_selector)
     for j in jobs.items:

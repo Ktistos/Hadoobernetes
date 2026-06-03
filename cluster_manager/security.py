@@ -79,6 +79,8 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Security(secu
             audience="account",
             options={"verify_aud": False}
         )
+        if decoded_token.get("azp") != CLIENT_ID:
+            raise HTTPException(status_code=401, detail="Token was not issued for this client")
         return decoded_token
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")

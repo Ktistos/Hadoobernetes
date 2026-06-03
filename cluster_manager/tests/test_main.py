@@ -70,7 +70,6 @@ def test_submit_job(monkeypatch):
         "num_mappers": 2,
         "num_reducers": 1,
         "input_data_path": "minio://in",
-        "output_data_path": "minio://out",
         "code_location": "minio://code",
         "input_file_size_bytes": 100
     }
@@ -129,7 +128,7 @@ def test_get_job_status_scopes_lookup_to_authenticated_user(monkeypatch):
         captured["user_id"] = user_id
         return {
             "job_id": job_id,
-            "status": "running",
+            "status": "mapping",
             "completed_mappers_count": 0,
             "completed_reducers_count": 0,
             "created_at": "2024-01-01T00:00:00Z",
@@ -175,3 +174,49 @@ def test_admin_jobs_uses_admin_scoped_listing(monkeypatch):
         "jobs": [{"job_id": "job-1", "user_id": "someone-else"}]
     }
     assert captured["called"] is True
+
+
+def test_update_job_state_requires_internal_token(monkeypatch):
+    mock_uuid = uuid4()
+
+    async def mock_update(*args):
+        return None
+
+    monkeypatch.setenv("INTERNAL_UPDATE_TOKEN", "expected-token")
+    monkeypatch.setattr(db, "update_job_status", mock_update)
+
+    response = client.post(f"/update_job_state/{mock_uuid}", json={"status": "completed"})
+
+    assert response.status_code == 403
+
+def test_update_job_state_accepts_internal_token(monkeypatch):
+    mock_uuid = uuid4()
+    captured = {}
+
+    async def mock_update(job_id, status):
+        captured["job_id"] = job_id
+        captured["status"] = status
+
+    monkeypatch.setenv("INTERNAL_UPDATE_TOKEN", "expected-token")
+    monkeypatch.setattr(db, "update_job_status", mock_update)
+
+    response = client.post(
+        f"/update_job_state/{mock_uuid}",
+        json={"status": "completed"},
+        headers={"X-Internal-Token": "expected-token"},
+    )
+
+    assert response.status_code == 200
+    assert captured == {"job_id": mock_uuid, "status": "completed"}
+
+
+def test_update_job_state_rejects_invalid_status(monkeypatch):
+    monkeypatch.setenv("INTERNAL_UPDATE_TOKEN", "expected-token")
+
+    response = client.post(
+        f"/update_job_state/{uuid4()}",
+        json={"status": "running"},
+        headers={"X-Internal-Token": "expected-token"},
+    )
+
+    assert response.status_code == 422

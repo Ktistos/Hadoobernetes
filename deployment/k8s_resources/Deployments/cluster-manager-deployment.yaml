@@ -56,3 +56,26 @@ spec:
                 secretKeyRef:
                   name: postgres-secret
                   key: POSTGRES_PASSWORD
+            - name: CLUSTER_MANAGER_URL
+              value: "http://cluster-manager:8000"
+            - name: K8S_NAMESPACE
+              value: "mapreduce"
+            - name: MINIO_ENDPOINT
+              value: "minio.minio-tenant.svc.cluster.local:80"
+            - name: MINIO_BUCKET
+              value: "mapreduce"
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secret
+                  key: MINIO_ROOT_USER
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secret
+                  key: MINIO_ROOT_PASSWORD
+            - name: INTERNAL_UPDATE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: internal-secret
+                  key: INTERNAL_UPDATE_TOKEN
