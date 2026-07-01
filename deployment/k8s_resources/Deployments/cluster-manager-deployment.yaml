@@ -56,3 +56,8 @@ spec:
                 secretKeyRef:
                   name: postgres-secret
                   key: POSTGRES_PASSWORD
+            - name: CLUSTER_MANAGER_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cluster-manager-secret
+                  key: CLUSTER_MANAGER_INTERNAL_TOKEN

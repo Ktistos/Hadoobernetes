@@ -65,6 +65,10 @@ TASK_STATUS_FAILED    = "failed"
 MIN_RESTART_TIMEOUT = 5
 
 
+def _object_path_under(prefix: str, object_name: str) -> str:
+    return f"{prefix.rstrip('/')}/{object_name.lstrip('/')}"
+
+
 # ---------------------------------------------------------------------------
 # In-memory task mirror
 # ---------------------------------------------------------------------------
@@ -111,12 +115,16 @@ class JobStateMachine:
     # -----------------------------------------------------------------------
 
     async def initialize(self):
+        postgres_port = os.environ.get("POSTGRES_PORT", os.environ.get("DB_PORT", "5432"))
+        if "://" in postgres_port:
+            postgres_port = postgres_port.split(":")[-1]
+
         self.db = await asyncpg.connect(
             user=os.environ.get("POSTGRES_USER", "admin"),
             password=os.environ.get("POSTGRES_PASSWORD", "admin"),
             database=os.environ.get("POSTGRES_DB", "mapreduce"),
             host=os.environ.get("POSTGRES_HOST", "postgres"),
-            port=int(os.environ.get("POSTGRES_PORT", os.environ.get("DB_PORT", "5432"))),
+            port=int(postgres_port),
         )
 
         jobs_row = await self.db.fetchrow(
@@ -292,7 +300,10 @@ class JobStateMachine:
         task.status          = TASK_STATUS_RUNNING
         task.started_at      = datetime.now(timezone.utc)
 
-        output_path = f"{self.job['intermediate_prefix']}output/part_{reduce_id}.json"
+        output_path = _object_path_under(
+            self.job["output_data_path"],
+            f"part_{reduce_id}.json",
+        )
 
         await self.db.execute(
             "UPDATE reduce_tasks SET status=$1, attempt_number=$2, output_data_path=$3, started_at=NOW() WHERE job_id=$4 AND reduce_id=$5",
@@ -506,7 +517,10 @@ class JobStateMachine:
         await self._set_job_status(JOB_STATUS_REDUCING)
 
         for i in range(self.config["num_reducers"]):
-            output_path = f"{self.job['intermediate_prefix']}output/part_{i}.json"
+            output_path = _object_path_under(
+                self.job["output_data_path"],
+                f"part_{i}.json",
+            )
             await self.db.execute(
                 """
                 INSERT INTO reduce_tasks
@@ -563,9 +577,13 @@ class JobStateMachine:
     async def _notify_cluster_manager(self, status: str):
         url     = os.environ["CLUSTER_MANAGER_URL"]
         payload = {"job_id": self.job_id, "status": status}
+        headers = {}
+        internal_token = os.environ.get("CLUSTER_MANAGER_INTERNAL_TOKEN")
+        if internal_token:
+            headers["X-Internal-Token"] = internal_token
         async with httpx.AsyncClient() as client:
             try:
-                resp = await client.post(f"{url}/update_job_state/{self.job_id}", json=payload, timeout=10)
+                resp = await client.post(f"{url}/update_job_state/{self.job_id}", json=payload, headers=headers, timeout=10)
                 resp.raise_for_status()
                 logger.info(f"[{self.job_id}] Notified Cluster Manager: status={status}")
             except Exception as exc:

@@ -175,3 +175,57 @@ def test_admin_jobs_uses_admin_scoped_listing(monkeypatch):
         "jobs": [{"job_id": "job-1", "user_id": "someone-else"}]
     }
     assert captured["called"] is True
+
+def test_update_job_state_requires_internal_token(monkeypatch):
+    mock_uuid = uuid4()
+    called = {"value": False}
+
+    async def mock_update(*args):
+        called["value"] = True
+
+    monkeypatch.setenv("CLUSTER_MANAGER_INTERNAL_TOKEN", "state-token")
+    monkeypatch.setattr(db, "update_job_status", mock_update)
+
+    response = client.post(f"/update_job_state/{mock_uuid}", json={"status": "completed"})
+
+    assert response.status_code == 401
+    assert called["value"] is False
+
+def test_update_job_state_rejects_invalid_status(monkeypatch):
+    mock_uuid = uuid4()
+    called = {"value": False}
+
+    async def mock_update(*args):
+        called["value"] = True
+
+    monkeypatch.setenv("CLUSTER_MANAGER_INTERNAL_TOKEN", "state-token")
+    monkeypatch.setattr(db, "update_job_status", mock_update)
+
+    response = client.post(
+        f"/update_job_state/{mock_uuid}",
+        json={"status": "deleted"},
+        headers={"X-Internal-Token": "state-token"},
+    )
+
+    assert response.status_code == 422
+    assert called["value"] is False
+
+def test_update_job_state_with_internal_token(monkeypatch):
+    mock_uuid = uuid4()
+    captured = {}
+
+    async def mock_update(job_id, status):
+        captured["job_id"] = job_id
+        captured["status"] = status
+
+    monkeypatch.setenv("CLUSTER_MANAGER_INTERNAL_TOKEN", "state-token")
+    monkeypatch.setattr(db, "update_job_status", mock_update)
+
+    response = client.post(
+        f"/update_job_state/{mock_uuid}",
+        json={"status": "completed"},
+        headers={"X-Internal-Token": "state-token"},
+    )
+
+    assert response.status_code == 200
+    assert captured == {"job_id": mock_uuid, "status": "completed"}

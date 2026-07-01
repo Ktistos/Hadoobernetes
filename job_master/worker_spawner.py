@@ -183,6 +183,7 @@ def spawn_mapper(
     labels   = {
         "app":          "mr-worker",
         "mr-role":      "mapper",
+        "job_id":       job_id,
         "mr-job-id":    job_id[:8],
         "mr-map-id":    str(map_id),
     }
@@ -220,6 +221,7 @@ def spawn_reducer(
     labels   = {
         "app":           "mr-worker",
         "mr-role":       "reducer",
+        "job_id":        job_id,
         "mr-job-id":     job_id[:8],
         "mr-reduce-id":  str(reduce_id),
     }

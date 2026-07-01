@@ -10,6 +10,7 @@ def test_spawn_job_master(monkeypatch):
     monkeypatch.setenv("POSTGRES_USER", "cm-user")
     monkeypatch.setenv("POSTGRES_PASSWORD", "cm-pass")
     monkeypatch.setenv("POSTGRES_DB", "cm-db")
+    monkeypatch.setenv("CLUSTER_MANAGER_INTERNAL_TOKEN", "state-token")
     
     test_id = uuid4()
     k8s_client.spawn_job_master(test_id)
@@ -34,32 +35,49 @@ def test_spawn_job_master(monkeypatch):
     assert env["POSTGRES_USER"] == "cm-user"
     assert env["POSTGRES_PASSWORD"] == "cm-pass"
     assert env["POSTGRES_DB"] == "cm-db"
+    assert env["CLUSTER_MANAGER_INTERNAL_TOKEN"] == "state-token"
 
 def test_terminate_job_pods(monkeypatch):
     mock_batch = MagicMock()
     mock_core = MagicMock()
-    
-    # Setup mock items returned by list queries
-    mock_job = MagicMock()
-    mock_job.metadata.name = "test-job-master"
-    mock_batch.list_namespaced_job.return_value.items = [mock_job]
-    
-    mock_pod = MagicMock()
-    mock_pod.metadata.name = "test-pod-worker"
-    mock_core.list_namespaced_pod.return_value.items = [mock_pod]
-    
+
+    job_master = MagicMock()
+    job_master.metadata.name = "test-job-master"
+    worker_job = MagicMock()
+    worker_job.metadata.name = "test-worker-job"
+    job_master_pod = MagicMock()
+    job_master_pod.metadata.name = "test-job-master-pod"
+    worker_pod = MagicMock()
+    worker_pod.metadata.name = "test-worker-pod"
+
+    mock_batch.list_namespaced_job.side_effect = [
+        MagicMock(items=[job_master]),
+        MagicMock(items=[worker_job]),
+    ]
+    mock_core.list_namespaced_pod.side_effect = [
+        MagicMock(items=[job_master_pod]),
+        MagicMock(items=[worker_pod]),
+    ]
+
     monkeypatch.setattr(k8s_client.client, "BatchV1Api", lambda: mock_batch)
     monkeypatch.setattr(k8s_client.client, "CoreV1Api", lambda: mock_core)
-    
+
     test_id = uuid4()
     k8s_client.terminate_job_pods(test_id)
-    
-    mock_batch.delete_namespaced_job.assert_called_once_with(
-        name="test-job-master", 
-        namespace="mapreduce", 
-        propagation_policy="Background"
-    )
-    mock_core.delete_namespaced_pod.assert_called_once_with(
-        name="test-pod-worker", 
-        namespace="mapreduce"
-    )
+
+    assert [call.kwargs["label_selector"] for call in mock_batch.list_namespaced_job.call_args_list] == [
+        f"job_id={test_id}",
+        f"mr-job-id={str(test_id)[:8]}",
+    ]
+    assert [call.kwargs["label_selector"] for call in mock_core.list_namespaced_pod.call_args_list] == [
+        f"job_id={test_id}",
+        f"mr-job-id={str(test_id)[:8]}",
+    ]
+    assert [call.kwargs["name"] for call in mock_batch.delete_namespaced_job.call_args_list] == [
+        "test-job-master",
+        "test-worker-job",
+    ]
+    assert [call.kwargs["name"] for call in mock_core.delete_namespaced_pod.call_args_list] == [
+        "test-job-master-pod",
+        "test-worker-pod",
+    ]

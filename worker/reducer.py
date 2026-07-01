@@ -13,6 +13,7 @@ Required:
   NUM_MAPPERS       Total mapper count (kept for logging/validation)
   CODE_PATH         MinIO object path of the user's .py  (jobs.code_location)
   OUTPUT_PATH       MinIO object path for final output   (reduce_tasks.output_data_path)
+  INTERMEDIATE_PREFIX MinIO prefix where mapper partition files are stored
   MINIO_ENDPOINT    e.g. minio-service:9000
   MINIO_ACCESS_KEY
   MINIO_SECRET_KEY
@@ -21,8 +22,7 @@ Required:
 Optional:
   PING_INTERVAL     Heartbeat cadence in seconds (default 10)
 
-Note: worker_spawner also sends INPUT_PATH and INTERMEDIATE_PREFIX.
-  Neither is read by the reducer — they are harmless unused env vars.
+Note: worker_spawner also sends INPUT_PATH. It is a harmless unused env var.
 
 Design-doc references
 ----------------------
@@ -53,6 +53,7 @@ MINIO_ENDPOINT   = os.environ["MINIO_ENDPOINT"]
 MINIO_ACCESS_KEY = os.environ["MINIO_ACCESS_KEY"]
 MINIO_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
 MINIO_BUCKET     = os.environ["MINIO_BUCKET"]
+INTERMEDIATE_PREFIX = os.environ["INTERMEDIATE_PREFIX"]
 PING_INTERVAL    = int(os.environ.get("PING_INTERVAL", "10"))
 
 # SQLite batch size: number of rows inserted per executemany call.
@@ -235,7 +236,7 @@ async def run() -> None:
         # partition files directly from MinIO into SQLite (Opt 2.1 + 3.3).
         # list_objects() returns only files that actually exist, so we never
         # 404 on mappers that had no data for this reducer.
-        prefix  = f"intermediate/{JOB_ID}/reducer_{REDUCER_ID}/"
+        prefix  = f"{INTERMEDIATE_PREFIX.rstrip('/')}/reducer_{REDUCER_ID}/"
         objects = list(minio_client.list_objects(MINIO_BUCKET, prefix=prefix, recursive=True))
 
         print(

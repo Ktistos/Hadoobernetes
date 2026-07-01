@@ -47,3 +47,24 @@ auth.json
 
 #other stuff
 test_file.txt
+*.pdf
+*.md
+!README.md
+# =========================
+# Agentic / AI Tooling
+# =========================
+.agents/
+graphify-out/
+.graphifyignore
+.antigravityignore
+.mypy_cache
+.pytest_cache
+.codex*
+.claude/
+CLAUDE.md
+AGENTS.md
+.cursor/
+.cursorrules
+.aider*
+.windsurf/
+.github/copilot-instructions.md

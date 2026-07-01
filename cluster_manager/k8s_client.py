@@ -35,6 +35,10 @@ def spawn_job_master(job_id: UUID):
     namespace = "mapreduce"
     job_name = f"job-master-{str(job_id)[:8]}"
 
+    postgres_port = os.getenv("POSTGRES_PORT", os.getenv("DB_PORT", "5432"))
+    if "://" in postgres_port:
+        postgres_port = postgres_port.split(":")[-1]
+
     container = client.V1Container(
         name="job-master",
         image="hadoobernetes/job-master:latest",
@@ -60,12 +64,12 @@ def spawn_job_master(job_id: UUID):
             client.V1EnvVar(name="K8S_NAMESPACE", value="mapreduce"),
             client.V1EnvVar(name="JOB_ID", value=str(job_id)),
             client.V1EnvVar(name="POSTGRES_HOST", value=os.getenv("POSTGRES_HOST", "postgres")),
-            # client.V1EnvVar(name="POSTGRES_PORT", value=os.getenv("POSTGRES_PORT", os.getenv("DB_PORT", "5432"))),
-            client.V1EnvVar(name="POSTGRES_PORT", value="5432"),
+            client.V1EnvVar(name="POSTGRES_PORT", value=postgres_port),
             client.V1EnvVar(name="POSTGRES_USER", value=os.getenv("POSTGRES_USER", "admin")),
             client.V1EnvVar(name="POSTGRES_PASSWORD", value=os.getenv("POSTGRES_PASSWORD", "admin")),
             client.V1EnvVar(name="POSTGRES_DB", value=os.getenv("POSTGRES_DB", "mapreduce")),
             client.V1EnvVar(name="CLUSTER_MANAGER_URL", value="http://cluster-manager:8000"),
+            client.V1EnvVar(name="CLUSTER_MANAGER_INTERNAL_TOKEN", value=os.getenv("CLUSTER_MANAGER_INTERNAL_TOKEN", "")),
             # client.V1EnvVar(name="MINIO_ENDPOINT", value="minio:80"),
             client.V1EnvVar(name="MINIO_ENDPOINT", value="minio.minio-tenant.svc.cluster.local:80"),
             client.V1EnvVar(name="MINIO_ACCESS_KEY", value="minioadmin"),
@@ -121,16 +125,28 @@ def terminate_job_pods(job_id: UUID):
     core_v1 = client.CoreV1Api()
     namespace = "mapreduce"
     
-    label_selector = f"job_id={str(job_id)}"
-    
-    jobs = batch_v1.list_namespaced_job(namespace=namespace, label_selector=label_selector)
-    for j in jobs.items:
-        batch_v1.delete_namespaced_job(
-            name=j.metadata.name, 
-            namespace=namespace, 
-            propagation_policy="Background"
-        )
-        
-    pods = core_v1.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
-    for p in pods.items:
-        core_v1.delete_namespaced_pod(name=p.metadata.name, namespace=namespace)
+    label_selectors = [
+        f"job_id={str(job_id)}",
+        f"mr-job-id={str(job_id)[:8]}",
+    ]
+    deleted_jobs: set[str] = set()
+    deleted_pods: set[str] = set()
+
+    for label_selector in label_selectors:
+        jobs = batch_v1.list_namespaced_job(namespace=namespace, label_selector=label_selector)
+        for j in jobs.items:
+            if j.metadata.name in deleted_jobs:
+                continue
+            batch_v1.delete_namespaced_job(
+                name=j.metadata.name,
+                namespace=namespace,
+                propagation_policy="Background"
+            )
+            deleted_jobs.add(j.metadata.name)
+
+        pods = core_v1.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
+        for p in pods.items:
+            if p.metadata.name in deleted_pods:
+                continue
+            core_v1.delete_namespaced_pod(name=p.metadata.name, namespace=namespace)
+            deleted_pods.add(p.metadata.name)

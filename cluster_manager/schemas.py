@@ -6,7 +6,7 @@ and outgoing responses in the FastAPI application.
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 from datetime import datetime
 
@@ -75,4 +75,4 @@ class UpdateJobStateRequest(BaseModel):
     Attributes:
         status (str): The new status to apply to the job in the database.
     """
-    status: str
+    status: Literal["pending", "mapping", "reducing", "completed", "failed"]

@@ -11,6 +11,7 @@ spec:
       initContainers:
         - name: wait-for-postgres
           image: ktistos/postgres-init:latest
+          imagePullPolicy: Never # Built locally by init_scripts/minikube-init.sh
           env:
             - name: PGHOST
               value: postgres
@@ -37,7 +38,7 @@ spec:
       containers:
         - name: postgres-init
           image: ktistos/postgres-init:latest
-          imagePullPolicy: Always
+          imagePullPolicy: Never # Built locally by init_scripts/minikube-init.sh
           env:
             - name: PGHOST
               value: postgres
@@ -62,6 +63,16 @@ spec:
             - sh
             - -c
             - |
+              # Idempotently ensure the target database exists before running init.sql.
+              # Postgres only auto-creates POSTGRES_DB on a fresh data dir, so a
+              # pre-existing volume would otherwise leave "$PGDATABASE" missing.
+              if [ "$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='$PGDATABASE'" \
+                        -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d postgres)" != "1" ]; then
+                echo "Database $PGDATABASE not found; creating it."
+                psql -v ON_ERROR_STOP=1 \
+                  -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d postgres \
+                  -c "CREATE DATABASE \"$PGDATABASE\" OWNER \"$PGUSER\""
+              fi
               psql -v ON_ERROR_STOP=1 \
                 -h "$PGHOST" \
                 -p "$PGPORT" \

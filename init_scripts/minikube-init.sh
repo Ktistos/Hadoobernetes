@@ -30,11 +30,8 @@ echo "==> Pointing Docker to Minikube's internal registry..."
 eval $(minikube docker-env)
 
 echo ""
-echo "==> Building the Cluster Manager image locally..."
-if [ -d "./cluster_manager" ]; then
-    docker build -t hadoobernetes/cluster-manager:latest ./cluster_manager
-    echo "    Image built successfully!"
-else
+echo "==> Building all custom images locally (into Minikube's Docker daemon)..."
+if [ ! -d "./cluster_manager" ]; then
     echo "--------------------------------------------------"
     echo " ERROR: ./cluster_manager directory not found!"
     echo " Please ensure you are running this script from the root of the repository:"
@@ -42,6 +39,18 @@ else
     echo "--------------------------------------------------"
     exit 1
 fi
+
+# Long-running services and dynamically-spawned workers (imagePullPolicy: Never).
+docker build -t hadoobernetes/cluster-manager:latest ./cluster_manager
+docker build -t hadoobernetes/job-master:latest ./job_master
+docker build -t mapreduce-worker:latest ./worker
+
+# Init-job images previously pulled from a personal DockerHub account.
+# Built locally so deployment no longer depends on external registry availability.
+docker build -t ktistos/postgres-init:latest ./deployment/dockerfiles/dbinit
+docker build -t ktistos/kcinit:latest ./deployment/dockerfiles/kcinit
+
+echo "    All images built successfully!"
 
 echo ""
 echo "Minikube is ready. Deploy the stack with:"

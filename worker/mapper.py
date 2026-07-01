@@ -19,6 +19,7 @@ Required:
   MINIO_ACCESS_KEY
   MINIO_SECRET_KEY
   MINIO_BUCKET
+  INTERMEDIATE_PREFIX MinIO prefix for mapper partition files
 
 Optional:
   PING_INTERVAL     Heartbeat cadence in seconds (default 10)
@@ -61,6 +62,7 @@ MINIO_ENDPOINT   = os.environ["MINIO_ENDPOINT"]
 MINIO_ACCESS_KEY = os.environ["MINIO_ACCESS_KEY"]
 MINIO_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
 MINIO_BUCKET     = os.environ["MINIO_BUCKET"]
+INTERMEDIATE_PREFIX = os.environ["INTERMEDIATE_PREFIX"]
 PING_INTERVAL    = int(os.environ.get("PING_INTERVAL", "10"))
 
 # Buffered range-read size for streaming input from MinIO.
@@ -231,7 +233,7 @@ def _iter_owned_line_batches(object_path: str):
 
 def _partition_object_path(reducer_id: int, batch_index: int) -> str:
     return (
-        f"intermediate/{JOB_ID}"
+        f"{INTERMEDIATE_PREFIX.rstrip('/')}"
         f"/reducer_{reducer_id}"
         f"/from_mapper_{MAP_ID}_chunk_{batch_index:06d}.jsonl"
     )

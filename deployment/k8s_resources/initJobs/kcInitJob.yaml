@@ -22,7 +22,7 @@ spec:
       containers:
         - name: keycloak-init
           image: ktistos/kcinit:latest
-          imagePullPolicy: Always
+          imagePullPolicy: Never # Built locally by init_scripts/minikube-init.sh
           env:
             - name: KEYCLOAK_URL
               value: http://keycloak:8080

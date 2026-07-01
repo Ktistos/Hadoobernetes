@@ -56,7 +56,7 @@ async def create_job_record(user_id: str, job_req: JobSubmissionRequest) -> UUID
         UUID: The newly generated unique identifier for the job.
     """
     job_id = uuid4()
-    intermediate_prefix = f"users/{user_id}/intermediate/{job_id}"
+    intermediate_prefix = f"users/{user_id}/intermediate/{job_id}/"
     
     async with _pool.acquire() as conn:
         async with conn.transaction():

@@ -49,6 +49,7 @@ def test_create_job_record(mock_pool):
     # Check that the first query was for the jobs table
     first_call_args = conn.execute.call_args_list[0][0]
     assert "INSERT INTO mapreduce.jobs" in first_call_args[0]
+    assert first_call_args[5] == f"users/user-123/intermediate/{job_id}/"
 
 def test_get_job_status(mock_pool):
     _, conn = mock_pool
