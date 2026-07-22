@@ -32,9 +32,9 @@ class JobSubmissionRequest(BaseModel):
     code_location: str
     input_file_size_bytes: int = Field(..., gt=0)
     
-    default_chunk_size_bytes: int = 67108864
-    worker_timeout_seconds: int = 300
-    max_task_retries: int = 3
+    default_chunk_size_bytes: int = Field(default=67108864, gt=0)
+    worker_timeout_seconds: int = Field(default=300, gt=0)
+    max_task_retries: int = Field(default=3, ge=0)
 
 class JobSubmissionResponse(BaseModel):
     """

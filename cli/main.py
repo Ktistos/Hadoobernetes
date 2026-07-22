@@ -70,10 +70,8 @@ def logout():
 def submit(mappers, reducers, input_file, code):
     """Stage local files and submit a new Map-Reduce job."""
     try:
-        # 1. We need a unique prefix for this user's uploads. 
-        # For a production CLI, you might extract the user ID from the JWT. 
-        # Here we'll use a generic staging prefix for simplicity.
-        staging_prefix = "users/staged_inputs"
+        user_id = auth.get_current_user_id()
+        staging_prefix = f"users/{user_id}/staged_inputs"
         
         # click.echo("[*] Uploading input data to MinIO...")
         # input_data_path = storage.upload_file(input_file, f"{staging_prefix}/data")

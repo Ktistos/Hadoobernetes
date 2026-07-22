@@ -43,3 +43,16 @@ def test_notify_cluster_manager_sends_internal_token(monkeypatch):
         "headers": {"X-Internal-Token": "state-token"},
         "timeout": 10,
     }
+
+
+def test_handle_ping_invalid_worker_id():
+    import pytest
+    machine = JobStateMachine("job-123")
+    
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(machine.handle_ping("invalid", "mapper", "started"))
+    assert "Invalid worker_id format" in str(exc.value)
+
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(machine.handle_ping("mapper_abc", "mapper", "started"))
+    assert "Invalid worker_id format" in str(exc.value)

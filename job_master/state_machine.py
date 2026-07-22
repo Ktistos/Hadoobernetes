@@ -41,6 +41,8 @@ import asyncpg
 import httpx
 
 from worker_spawner import spawn_mapper, spawn_reducer
+from logging_utils import profile_time, profile_block
+import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +116,7 @@ class JobStateMachine:
     # Initialisation
     # -----------------------------------------------------------------------
 
+    @profile_time
     async def initialize(self):
         postgres_port = os.environ.get("POSTGRES_PORT", os.environ.get("DB_PORT", "5432"))
         if "://" in postgres_port:
@@ -235,6 +238,7 @@ class JobStateMachine:
     # Map task creation
     # -----------------------------------------------------------------------
 
+    @profile_time
     async def _create_map_tasks(self):
         file_size   = self.job["input_file_size_bytes"]
         num_mappers = self.config["num_mappers"]
@@ -263,6 +267,7 @@ class JobStateMachine:
     # Spawning
     # -----------------------------------------------------------------------
 
+    @profile_time
     async def _spawn_and_track_mapper(self, map_id: int):
         task = self.map_tasks[map_id]
         task.attempt_number += 1
@@ -294,6 +299,7 @@ class JobStateMachine:
             f"offsets=[{offsets['byte_offset_start']},{offsets['byte_offset_end']}])"
         )
 
+    @profile_time
     async def _spawn_and_track_reducer(self, reduce_id: int):
         task = self.reduce_tasks[reduce_id]
         task.attempt_number += 1
@@ -355,7 +361,10 @@ class JobStateMachine:
     # -----------------------------------------------------------------------
 
     async def handle_ping(self, worker_id: str, worker_type: str, status: str):
-        task_id = int(worker_id.split("_")[-1])
+        parts = worker_id.split("_")
+        if len(parts) < 2 or not parts[-1].isdigit():
+            raise ValueError(f"Invalid worker_id format: {worker_id}")
+        task_id = int(parts[-1])
         async with self.lock:
             if worker_type == "mapper":
                 await self._handle_mapper_ping(task_id, status)
@@ -471,6 +480,7 @@ class JobStateMachine:
                 f"[{self.job_id}] mapper_{map_id} timed out — "
                 f"attempt_number={task.attempt_number}, max_task_retries={self.config['max_task_retries']}"
             )
+            metrics.TASK_TIMEOUTS_TOTAL.labels(worker_id=f"mapper_{map_id}", worker_type="mapper").inc()
             if task.attempt_number >= self.config["max_task_retries"]:
                 task.status = TASK_STATUS_FAILED
                 await self.db.execute(
@@ -492,6 +502,7 @@ class JobStateMachine:
                 f"[{self.job_id}] reducer_{reduce_id} timed out — "
                 f"attempt_number={task.attempt_number}, max_task_retries={self.config['max_task_retries']}"
             )
+            metrics.TASK_TIMEOUTS_TOTAL.labels(worker_id=f"reducer_{reduce_id}", worker_type="reducer").inc()
             if task.attempt_number >= self.config["max_task_retries"]:
                 task.status = TASK_STATUS_FAILED
                 await self.db.execute(
@@ -574,7 +585,12 @@ class JobStateMachine:
         )
         await self._notify_cluster_manager(JOB_STATUS_FAILED)
 
+    @profile_time
     async def _notify_cluster_manager(self, status: str):
+        current_status = self.job.get("status", "unknown")
+        metrics.PHASE_TRANSITIONS_TOTAL.labels(from_state=current_status, to_state=status).inc()
+        self.job["status"] = status
+        
         url     = os.environ["CLUSTER_MANAGER_URL"]
         payload = {"job_id": self.job_id, "status": status}
         headers = {}

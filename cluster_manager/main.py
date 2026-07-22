@@ -6,17 +6,21 @@ and security protocols into a set of exposed HTTP endpoints.
 """
 
 import os
+import time
 from contextlib import asynccontextmanager
 from uuid import UUID
 
-from fastapi import FastAPI, Depends, Header, HTTPException
+from fastapi import FastAPI, Depends, Header, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from schemas import JobSubmissionRequest, JobSubmissionResponse, JobStatusResponse, UpdateJobStateRequest
 from security import get_current_user, require_admin
 import database as db
 import k8s_client as k8s
+from logging_utils import profile_time, configure_logging
+import metrics
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,12 +29,37 @@ async def lifespan(app: FastAPI):
     Initializes the database connection pool and Kubernetes configuration on startup,
     and cleanly closes connections on shutdown.
     """
+    configure_logging("Cluster Manager")
     await db.init_db_pool()
     k8s.init_k8s()
     yield
     await db.close_db_pool()
 
 app = FastAPI(title="Hadoobernetes Cluster Manager", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def prometheus_middleware(request: Request, call_next):
+    if request.url.path == "/metrics":
+        return await call_next(request)
+
+    start_time = time.perf_counter()
+    response = await call_next(request)
+    duration = time.perf_counter() - start_time
+    
+    route_name = request.scope.get("route").path if request.scope.get("route") else request.url.path
+    method = request.method
+    status = str(response.status_code)
+    
+    metrics.HTTP_REQUEST_LATENCY.labels(method=method, endpoint=route_name).observe(duration)
+    metrics.HTTP_REQUESTS_TOTAL.labels(method=method, endpoint=route_name, status=status).inc()
+    
+    return response
+
+
+@app.get("/metrics")
+async def metrics_endpoint():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 def require_internal_token(x_internal_token: str | None = Header(default=None)) -> None:
@@ -92,6 +121,7 @@ async def liveliness_check():
     return {"status": "alive"}
 
 @app.post("/submit_job", response_model=JobSubmissionResponse)
+@profile_time
 async def submit_job(req: JobSubmissionRequest, user_id: str = Depends(get_current_user)):
     """
     Accepts a new Map-Reduce job payload from an authenticated user, registers the configuration
@@ -100,11 +130,13 @@ async def submit_job(req: JobSubmissionRequest, user_id: str = Depends(get_curre
     try:
         job_id = await db.create_job_record(user_id, req)
         k8s.spawn_job_master(job_id)
+        metrics.JOBS_SUBMITTED_TOTAL.inc()
         return {"job_id": job_id, "message": "Job successfully submitted and master spawned"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to submit job: {str(e)}")
 
 @app.get("/job_status/{job_id}", response_model=JobStatusResponse)
+@profile_time
 async def get_job_status(job_id: UUID, user_id: str = Depends(get_current_user)):
     """
     Retrieves the real-time execution status and completion metrics for a specific job.
@@ -116,6 +148,7 @@ async def get_job_status(job_id: UUID, user_id: str = Depends(get_current_user))
     return status_record
 
 @app.post("/abort_job/{job_id}")
+@profile_time
 async def abort_job(job_id: UUID, user_id: str = Depends(get_current_user)):
     """
     Manually terminates an active job. 
@@ -128,6 +161,7 @@ async def abort_job(job_id: UUID, user_id: str = Depends(get_current_user)):
         
     await db.update_job_status(job_id, "aborted")
     k8s.terminate_job_pods(job_id)
+    metrics.JOBS_ABORTED_TOTAL.labels(user_id=user_id).inc()
     
     return {"message": f"Job {job_id} aborted successfully"}
 
@@ -148,6 +182,7 @@ async def get_all_jobs_admin(admin_user_id: str = Depends(require_admin)):
     return {"jobs": jobs}
 
 @app.post("/update_job_state/{job_id}")
+@profile_time
 async def update_job_state(
     job_id: UUID,
     req: UpdateJobStateRequest,

@@ -72,3 +72,35 @@ def test_invalid_negative_file_size():
         JobSubmissionRequest(**payload)
         
     assert "Input should be greater than 0" in str(exc_info.value)
+
+def test_invalid_operational_fields():
+    """Test that invalid values for default_chunk_size_bytes, worker_timeout_seconds, and max_task_retries are rejected."""
+    base_payload = {
+        "num_mappers": 5,
+        "num_reducers": 2,
+        "input_data_path": "minio://bucket/input.txt",
+        "output_data_path": "minio://bucket/output/",
+        "code_location": "minio://bucket/script.py",
+        "input_file_size_bytes": 1048576
+    }
+
+    # Zero chunk size
+    payload = base_payload.copy()
+    payload["default_chunk_size_bytes"] = 0
+    with pytest.raises(ValidationError) as exc_info:
+        JobSubmissionRequest(**payload)
+    assert "Input should be greater than 0" in str(exc_info.value)
+
+    # Negative timeout
+    payload = base_payload.copy()
+    payload["worker_timeout_seconds"] = -10
+    with pytest.raises(ValidationError) as exc_info:
+        JobSubmissionRequest(**payload)
+    assert "Input should be greater than 0" in str(exc_info.value)
+
+    # Negative max_task_retries
+    payload = base_payload.copy()
+    payload["max_task_retries"] = -1
+    with pytest.raises(ValidationError) as exc_info:
+        JobSubmissionRequest(**payload)
+    assert "Input should be greater than or equal to 0" in str(exc_info.value)

@@ -77,7 +77,7 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Security(secu
             public_key,
             algorithms=["RS256"],
             audience="account",
-            options={"verify_aud": False}
+            options={"verify_aud": True}
         )
         return decoded_token
     except jwt.ExpiredSignatureError:

@@ -1,0 +1,3 @@
+replicated mapreduce on kubernetes
+highly resilient job master
+validate worker ping status

@@ -6,7 +6,7 @@ def test_spawn_job_master(monkeypatch):
     mock_batch = MagicMock()
     monkeypatch.setattr(k8s_client.client, "BatchV1Api", lambda: mock_batch)
     monkeypatch.setenv("POSTGRES_HOST", "postgres-service")
-    monkeypatch.setenv("POSTGRES_PORT", "5433")
+    monkeypatch.setenv("DB_PORT", "5433")
     monkeypatch.setenv("POSTGRES_USER", "cm-user")
     monkeypatch.setenv("POSTGRES_PASSWORD", "cm-pass")
     monkeypatch.setenv("POSTGRES_DB", "cm-db")

@@ -46,6 +46,7 @@ import httpx
 import orjson
 from minio import Minio
 from minio.error import S3Error
+from logging_utils import profile_time, configure_logging
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
@@ -109,6 +110,7 @@ async def ping_loop() -> None:
 
 # ── User code loading ─────────────────────────────────────────────────────────
 
+@profile_time
 def load_user_map_function(code_path: str):
     """Download user's .py from MinIO and return its map() function."""
     with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
@@ -126,8 +128,7 @@ def partition_key(key: str) -> int:
     return int(hashlib.md5(key.encode()).hexdigest(), 16) % NUM_REDUCERS
 
 
-# ── Core logic ────────────────────────────────────────────────────────────────
-
+@profile_time
 def _read_input_range(object_path: str, offset: int, length: int) -> bytes:
     """
     Read a byte range from the input object and always release the underlying
@@ -239,6 +240,7 @@ def _partition_object_path(reducer_id: int, batch_index: int) -> str:
     )
 
 
+@profile_time
 def _upload_partition_batch(partition_buffers: dict[int, tempfile.SpooledTemporaryFile], batch_index: int) -> int:
     """Upload one reducer shard object per non-empty partition buffer."""
     uploaded = 0
@@ -261,6 +263,7 @@ def _upload_partition_batch(partition_buffers: dict[int, tempfile.SpooledTempora
     return uploaded
 
 
+@profile_time
 def _run_sync_core(user_map, object_path: str = INPUT_PATH) -> int:
     """
     Stream the assigned byte range from MinIO, run the user map function, and
@@ -304,6 +307,7 @@ def _run_sync_core(user_map, object_path: str = INPUT_PATH) -> int:
 # ── Main async entry point ────────────────────────────────────────────────────
 
 async def run() -> None:
+    configure_logging(f"Mapper {MAP_ID}")
     await ping("started")
     ping_task = asyncio.create_task(ping_loop())
 

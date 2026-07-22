@@ -39,6 +39,7 @@ import tempfile
 import httpx
 import orjson
 from minio import Minio
+from logging_utils import profile_time, configure_logging
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
@@ -99,6 +100,7 @@ async def ping_loop() -> None:
 
 # ── User code loading ─────────────────────────────────────────────────────────
 
+@profile_time
 def load_user_reduce_function(code_path: str):
     """Download user's .py from MinIO and return its reduce() function."""
     with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
@@ -131,6 +133,7 @@ def _setup_sqlite(db_path: str) -> tuple[sqlite3.Connection, sqlite3.Cursor]:
     return conn, cursor
 
 
+@profile_time
 def _ingest_partition(
     cursor:   sqlite3.Cursor,
     response,                   # urllib3 HTTPResponse from minio.get_object()
@@ -169,6 +172,7 @@ def _ingest_partition(
     return rows_added
 
 
+@profile_time
 def _run_reduce_phase(
     conn:        sqlite3.Connection,
     user_reduce,
@@ -217,6 +221,7 @@ def _run_reduce_phase(
 # ── Main async entry point ────────────────────────────────────────────────────
 
 async def run() -> None:
+    configure_logging(f"Reducer {REDUCER_ID}")
     await ping("started")
     ping_task = asyncio.create_task(ping_loop())
 

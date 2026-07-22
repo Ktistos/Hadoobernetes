@@ -35,9 +35,7 @@ def spawn_job_master(job_id: UUID):
     namespace = "mapreduce"
     job_name = f"job-master-{str(job_id)[:8]}"
 
-    postgres_port = os.getenv("POSTGRES_PORT", os.getenv("DB_PORT", "5432"))
-    if "://" in postgres_port:
-        postgres_port = postgres_port.split(":")[-1]
+    postgres_port = os.getenv("DB_PORT", "5432")
 
     container = client.V1Container(
         name="job-master",

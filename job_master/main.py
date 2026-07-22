@@ -26,12 +26,16 @@ Environment variables (all required unless noted):
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from state_machine import JobStateMachine
+from logging_utils import profile_time, configure_logging
+import metrics
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +51,7 @@ _ready = False
 async def lifespan(app: FastAPI):
     global state_machine, _ready
     job_id = os.environ["JOB_ID"]
+    configure_logging(f"Job Master {job_id[:8]}")
     
     if "JOB_MASTER_SERVICE_URL" not in os.environ:
         pod_ip = os.environ.get("POD_IP", "127.0.0.1")
@@ -65,6 +70,30 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Job Master", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def prometheus_middleware(request: Request, call_next):
+    if request.url.path == "/metrics":
+        return await call_next(request)
+
+    start_time = time.perf_counter()
+    response = await call_next(request)
+    duration = time.perf_counter() - start_time
+    
+    route_name = request.scope.get("route").path if request.scope.get("route") else request.url.path
+    method = request.method
+    status = str(response.status_code)
+    
+    metrics.HTTP_REQUEST_LATENCY.labels(method=method, endpoint=route_name).observe(duration)
+    metrics.HTTP_REQUESTS_TOTAL.labels(method=method, endpoint=route_name, status=status).inc()
+    
+    return response
+
+
+@app.get("/metrics")
+async def metrics_endpoint():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +115,7 @@ class WorkerPingResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @app.post("/worker_ping", response_model=WorkerPingResponse)
+@profile_time
 async def worker_ping(req: WorkerPingRequest):
     """
     Accepts heartbeat / phase-change pings from mapper and reducer pods.
@@ -98,7 +128,16 @@ async def worker_ping(req: WorkerPingRequest):
     if req.status not in ("started", "alive", "completed", "failed"): #temporarily add "failed" status for better error handling
         raise HTTPException(status_code=400, detail=f"Unknown status: {req.status}")
 
-    await state_machine.handle_ping(req.worker_id, req.worker_type, req.status)
+    # Validate worker_id format (must end with _<integer>)
+    parts = req.worker_id.split("_")
+    if len(parts) < 2 or not parts[-1].isdigit():
+        raise HTTPException(status_code=400, detail=f"Invalid worker_id format: {req.worker_id}")
+
+    try:
+        await state_machine.handle_ping(req.worker_id, req.worker_type, req.status)
+        metrics.WORKER_PINGS_TOTAL.labels(worker_id=req.worker_id, worker_type=req.worker_type, status=req.status).inc()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return WorkerPingResponse(ok=True)
 
 

@@ -13,6 +13,12 @@ from auth import get_access_token
 
 CLUSTER_MANAGER_URL = os.getenv("CLUSTER_MANAGER_URL", "http://localhost:8000")
 
+def _get_error_msg(response: requests.Response) -> str:
+    try:
+        return str(response.json().get("detail", response.text))
+    except Exception:
+        return response.text
+
 def _get_headers() -> Dict[str, str]:
     """
     Constructs the HTTP headers required for requests, embedding the JWT.
@@ -43,7 +49,7 @@ def submit_job(payload: Dict[str, Any]) -> Dict[str, Any]:
     response = requests.post(url, json=payload, headers=_get_headers())
     
     if response.status_code != 200:
-        raise Exception(f"Failed to submit job: {response.text}")
+        raise Exception(f"Failed to submit job: {_get_error_msg(response)}")
         
     return response.json()
 
@@ -61,7 +67,7 @@ def get_status(job_id: str) -> Dict[str, Any]:
     response = requests.get(url, headers=_get_headers())
     
     if response.status_code != 200:
-        raise Exception(f"Failed to get status: {response.text}")
+        raise Exception(f"Failed to get status: {_get_error_msg(response)}")
         
     return response.json()
 
@@ -79,6 +85,6 @@ def abort_job(job_id: str) -> Dict[str, Any]:
     response = requests.post(url, headers=_get_headers())
     
     if response.status_code != 200:
-        raise Exception(f"Failed to abort job: {response.text}")
+        raise Exception(f"Failed to abort job: {_get_error_msg(response)}")
         
     return response.json()

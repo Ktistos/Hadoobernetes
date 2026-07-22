@@ -46,6 +46,7 @@ MAPPER_ENV = {
     "MINIO_BUCKET":    "mapreduce",
     "PING_INTERVAL":   "10",
     "PROFILE":         "0",
+    "INTERMEDIATE_PREFIX": "intermediate/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
 }
 
 REDUCER_ENV = {
